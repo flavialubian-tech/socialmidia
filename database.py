@@ -251,8 +251,11 @@ END;
 
 CONFIGURACOES_PADRAO = {
     "llm_provedor": "ollama",          # ollama | openai | anthropic
-    "llm_modelo": "llama3.1",
+    "llm_modelo_ollama": "llama3.1",
+    "llm_modelo_openai": "gpt-4o-mini",
+    "llm_modelo_anthropic": "claude-sonnet-5-5",
     "llm_temperatura": "0.7",
+    "radar_limite_comentarios": "300",
     "metricas_limiar_views": "10000",  # acima disso o Dashboard sugere "Reciclar este tema"
     "metricas_limiar_saves": "500",
 }
@@ -404,6 +407,154 @@ def atualizar_persona(persona_id: int, **campos: Any) -> None:
 def excluir_persona(persona_id: int) -> None:
     with get_connection() as conn:
         conn.execute("DELETE FROM personas WHERE id = ?", (persona_id,))
+
+
+# ---------------------------------------------------------------------------
+# Radar de Audiência (Módulo 1)
+# ---------------------------------------------------------------------------
+_ANALISE_JSON = ("dores", "dicionario", "tendencias")
+
+
+def criar_busca(url: str, plataforma: str, metodo_coleta: str, persona_id: int | None = None) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO radar_buscas (url, plataforma, metodo_coleta, persona_id) VALUES (?, ?, ?, ?)",
+            (url, plataforma, metodo_coleta, persona_id),
+        )
+        return cur.lastrowid
+
+
+def atualizar_busca(busca_id: int, **campos: Any) -> None:
+    permitidos = {"status", "total_comentarios", "erro", "plataforma", "metodo_coleta"}
+    campos = {k: v for k, v in campos.items() if k in permitidos}
+    if not campos:
+        return
+    sets = ", ".join(f"{k} = ?" for k in campos)
+    with get_connection() as conn:
+        conn.execute(f"UPDATE radar_buscas SET {sets} WHERE id = ?", (*campos.values(), busca_id))
+
+
+def listar_buscas(persona_id: int | None = None, limite: int = 50) -> list[dict]:
+    sql = """SELECT b.*, p.nome AS persona,
+                    (SELECT a.id FROM analises_audiencia a WHERE a.busca_id = b.id
+                     ORDER BY a.id DESC LIMIT 1) AS analise_id
+             FROM radar_buscas b LEFT JOIN personas p ON p.id = b.persona_id"""
+    params: list[Any] = []
+    if persona_id:
+        sql += " WHERE b.persona_id = ?"
+        params.append(persona_id)
+    sql += " ORDER BY b.id DESC LIMIT ?"
+    params.append(limite)
+    with get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def excluir_busca(busca_id: int) -> None:
+    """Remove a busca, seus comentários e análises (assuntos quentes gerados são mantidos)."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM radar_buscas WHERE id = ?", (busca_id,))
+
+
+def salvar_comentarios(busca_id: int, comentarios: list[dict]) -> int:
+    linhas = [
+        (busca_id, c.get("autor"), c["texto"], int(c.get("curtidas") or 0), c.get("publicado_em"))
+        for c in comentarios
+        if (c.get("texto") or "").strip()
+    ]
+    with get_connection() as conn:
+        conn.executemany(
+            "INSERT INTO comentarios (busca_id, autor, texto, curtidas, publicado_em) VALUES (?, ?, ?, ?, ?)",
+            linhas,
+        )
+        conn.execute("UPDATE radar_buscas SET total_comentarios = ? WHERE id = ?", (len(linhas), busca_id))
+    return len(linhas)
+
+
+def listar_comentarios(busca_id: int) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT autor, texto, curtidas, publicado_em FROM comentarios WHERE busca_id = ? "
+            "ORDER BY curtidas DESC, id",
+            (busca_id,),
+        )
+        return [dict(r) for r in rows]
+
+
+def salvar_analise(busca_id: int, persona_id: int | None, analise: dict, modelo_llm: str) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO analises_audiencia (busca_id, persona_id, dores, dicionario, tendencias,
+                                               resumo, modelo_llm)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (busca_id, persona_id, to_json(analise.get("dores")), to_json(analise.get("dicionario")),
+             to_json(analise.get("tendencias")), analise.get("resumo", ""), modelo_llm),
+        )
+        return cur.lastrowid
+
+
+def obter_analise(analise_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT a.*, b.url, b.plataforma, b.total_comentarios, p.nome AS persona
+               FROM analises_audiencia a
+               JOIN radar_buscas b ON b.id = a.busca_id
+               LEFT JOIN personas p ON p.id = a.persona_id
+               WHERE a.id = ?""",
+            (analise_id,),
+        ).fetchone()
+    return row_to_dict(row, _ANALISE_JSON)
+
+
+# ---------------------------------------------------------------------------
+# Assuntos Quentes (ponte Módulo 1 -> Módulo 2)
+# ---------------------------------------------------------------------------
+def criar_assunto_quente(
+    tema: str,
+    descricao: str = "",
+    intensidade: int = 50,
+    persona_id: int | None = None,
+    analise_id: int | None = None,
+    origem: str = "radar",
+    conteudo_origem_id: int | None = None,
+) -> int | None:
+    """Cria o assunto; retorna None se já existe um igual ainda ativo para a mesma persona."""
+    tema = tema.strip()
+    intensidade = max(0, min(100, int(intensidade)))
+    with get_connection() as conn:
+        duplicado = conn.execute(
+            """SELECT id FROM assuntos_quentes
+               WHERE lower(tema) = lower(?) AND persona_id IS ? AND status IN ('novo','em_uso')""",
+            (tema, persona_id),
+        ).fetchone()
+        if duplicado:
+            return None
+        cur = conn.execute(
+            """INSERT INTO assuntos_quentes (tema, descricao, intensidade, persona_id, analise_id,
+                                             origem, conteudo_origem_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (tema, descricao, intensidade, persona_id, analise_id, origem, conteudo_origem_id),
+        )
+        return cur.lastrowid
+
+
+def listar_assuntos_quentes(persona_id: int | None = None, status: tuple[str, ...] | None = ("novo",)) -> list[dict]:
+    sql = """SELECT q.*, p.nome AS persona FROM assuntos_quentes q
+             LEFT JOIN personas p ON p.id = q.persona_id WHERE 1 = 1"""
+    params: list[Any] = []
+    if persona_id:
+        sql += " AND q.persona_id = ?"
+        params.append(persona_id)
+    if status:
+        sql += f" AND q.status IN ({', '.join('?' * len(status))})"
+        params.extend(status)
+    sql += " ORDER BY q.intensidade DESC, q.id DESC"
+    with get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def atualizar_status_assunto(assunto_id: int, status: str) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE assuntos_quentes SET status = ? WHERE id = ?", (status, assunto_id))
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,9 @@ paginas = {
         st.Page("modulos/m3_cofre_ideias.py", title="Cofre de Ideias", icon="🗄️"),
         st.Page("modulos/m4_estudio.py", title="Estúdio de Produção", icon="🎬"),
     ],
+    "Sistema": [
+        st.Page("modulos/configuracoes.py", title="Configurações", icon="⚙️"),
+    ],
 }
 
 navegacao = st.navigation(paginas)
