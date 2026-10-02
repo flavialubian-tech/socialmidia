@@ -22,7 +22,7 @@ requests>=2.32
 beautifulsoup4>=4.12
 apify-client>=1.8
 # selenium>=4.25          # opcional: só se precisar de scraping com navegador
-schedule>=1.2              # buscas agendadas em background (v2)
+APScheduler>=3.10,<4       # Rastreador Automático (buscas agendadas em segundo plano)
 
 # --- Mídia (Módulo 4) ----------------------------------------
 Pillow>=10.4

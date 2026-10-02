@@ -125,7 +125,8 @@ def test_executar_radar_manual_completo():
     resultado = radar.executar_radar("", comentarios=COMENTARIOS, persona_id=pid,
                                      llm=llm_falso(json.dumps(RESPOSTA_IA)))
     assert resultado.total_comentarios == 3
-    assert len(resultado.assuntos_criados) == 2
+    assert len(resultado.assuntos_criados) == 3  # 2 tendências + 1 dor de frequência alta
+    assert {a["tipo"] for a in db.listar_assuntos_quentes(pid)} == {"tendencia", "dor"}
     busca = db.listar_buscas()[0]
     assert busca["status"] == "concluido" and busca["metodo_coleta"] == "manual"
     assert busca["analise_id"] == resultado.analise_id

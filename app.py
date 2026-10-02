@@ -3,12 +3,16 @@
 Executar:  streamlit run app.py
 """
 
+import logging
+
 import streamlit as st
 from dotenv import load_dotenv
 
 from database import init_db
+from modulos.comum import obter_agendador
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 st.set_page_config(
     page_title="Social Mídia Autônoma",
@@ -26,6 +30,9 @@ def _inicializar_banco() -> bool:
 
 
 _inicializar_banco()
+
+
+obter_agendador()  # piloto automático do Rastreador em segundo plano
 
 paginas = {
     "Visão Geral": [

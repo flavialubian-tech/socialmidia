@@ -1,9 +1,13 @@
 """MÓDULO 1 — Cérebro: Multi-Personas, Radar de Audiência e Assuntos Quentes."""
 
+from datetime import datetime, time
+
 import pandas as pd
 import streamlit as st
 
 import database as db
+from modulos.comum import obter_agendador
+from services import rastreador as rastreador_srv
 from services import scraper
 from services.llm import LLMError, PROVEDORES, config_atual, obter_segredo
 from services.radar import executar_radar
@@ -16,6 +20,9 @@ ROTULOS_PLATAFORMA = {
 }
 ROTULOS_STATUS_ASSUNTO = {"novo": "🔥 Novo", "em_uso": "✍️ Em uso", "usado": "✅ Usado", "descartado": "🗑️ Descartado"}
 ROTULOS_STATUS_BUSCA = {"pendente": "⏳", "coletando": "📥", "analisando": "🧠", "concluido": "✅", "erro": "❌"}
+ROTULOS_TIPO_ASSUNTO = {"tendencia": "📈 Tendência", "dor": "😣 Dor", "manual": "✍️ Manual"}
+ROTULOS_STATUS_EXECUCAO = {"executando": "⏳ Rodando", "concluido": "✅ Concluído",
+                           "sem_resultados": "🤷 Sem resultados", "erro": "❌ Erro"}
 ICONE_FREQUENCIA = {"alta": "🔴", "media": "🟠", "baixa": "🟡"}
 
 
@@ -43,8 +50,9 @@ if aviso := st.session_state.pop("_aviso_cerebro", None):
 st.title("🧠 Cérebro")
 st.caption("Quem você é para cada público, o que esse público sente e sobre o que ele quer ouvir agora.")
 
-aba_personas, aba_radar, aba_assuntos, aba_historico = st.tabs(
-    ["👤 Personas", "📡 Radar de Audiência", "🔥 Assuntos Quentes", "🕘 Histórico do Radar"]
+aba_personas, aba_radar, aba_rastreador, aba_assuntos, aba_historico = st.tabs(
+    ["👤 Personas", "📡 Radar de Audiência", "🤖 Rastreador Automático", "🔥 Assuntos Quentes",
+     "🕘 Histórico do Radar"]
 )
 
 # ===========================================================================
@@ -236,7 +244,8 @@ with aba_assuntos:
             if st.form_submit_button("Adicionar", type="primary"):
                 if not tema.strip():
                     st.error("Informe o tema.")
-                elif db.criar_assunto_quente(tema, descricao, intensidade, persona_manual, origem="manual"):
+                elif db.criar_assunto_quente(tema, descricao, intensidade, persona_manual, origem="manual",
+                                             tipo="manual"):
                     avisar("Assunto adicionado!", "🔥")
                     st.rerun()
                 else:
@@ -250,7 +259,9 @@ with aba_assuntos:
             c1, c2 = st.columns([4, 1])
             c1.markdown(f"**{a['tema']}**")
             c1.caption(f"{ROTULOS_STATUS_ASSUNTO[a['status']]} · {a['persona'] or 'Sem persona'} · "
-                       f"origem: {a['origem']} · {a['criado_em'][:10]}")
+                       f"{ROTULOS_TIPO_ASSUNTO.get(a['tipo'], a['tipo'])} · "
+                       f"{'🤖 rastreador: ' + a['rastreador'] if a['rastreador'] else 'origem: ' + a['origem']}"
+                       f" · {a['criado_em'][:10]}")
             c2.progress(a["intensidade"] / 100, text=f"{a['intensidade']}%")
             if a["descricao"]:
                 st.write(a["descricao"])
@@ -307,3 +318,144 @@ with aba_historico:
                     st.session_state.pop("radar_ultima_analise")
                 avisar("Busca excluída.", "🗑️")
                 st.rerun()
+
+
+# ===========================================================================
+# RASTREADOR AUTOMÁTICO (piloto automático)
+# ===========================================================================
+def formatar_data(texto: str | None) -> str:
+    return datetime.fromisoformat(texto).strftime("%d/%m %H:%M") if texto else "nunca"
+
+
+@st.fragment(run_every="10s" if db.ha_execucao_em_andamento() else None)
+def painel_execucoes() -> None:
+    execucoes = db.listar_execucoes(limite=15)
+    if not execucoes:
+        st.caption("Nenhuma rodada ainda. Elas aparecem aqui assim que o piloto automático trabalhar.")
+        return
+    if any(e["status"] == "executando" for e in execucoes):
+        st.info("⏳ Há rastreadores rodando agora (busca + comentários + IA levam alguns minutos). "
+                "Esta lista se atualiza sozinha.")
+    for e in execucoes:
+        rotulo = (f"{ROTULOS_STATUS_EXECUCAO[e['status']]} · 🔎 {e['palavra_chave']} "
+                  f"({ROTULOS_PLATAFORMA[e['plataforma']]}) · {formatar_data(e['iniciado_em'])} · "
+                  f"{'🔁 agendado' if e['gatilho'] == 'agendado' else '👆 manual'}")
+        with st.expander(rotulo):
+            if e["erro"]:
+                (st.error if e["status"] == "erro" else st.warning)(e["erro"])
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Vídeos analisados", len(e["videos"]))
+            c2.metric("Comentários lidos", e["total_comentarios"])
+            c3.metric("Assuntos novos", e["assuntos_criados"])
+            if e["videos"]:
+                st.dataframe(
+                    pd.DataFrame(e["videos"])[["url", "titulo", "views", "curtidas", "comentarios"]],
+                    hide_index=True, width="stretch",
+                    column_config={"url": st.column_config.LinkColumn("Vídeo", display_text="abrir ↗"),
+                                   "titulo": "Legenda", "views": "Views", "curtidas": "Curtidas",
+                                   "comentarios": "Comentários"},
+                )
+            if e["busca_id"] and st.toggle("Ver análise completa", key=f"ver_exec_{e['id']}"):
+                if analise := db.analise_da_busca(e["busca_id"]):
+                    mostrar_analise(analise)
+
+
+with aba_rastreador:
+    agendador = obter_agendador()
+    ativo, dia, hora = rastreador_srv.config_agenda()
+    proxima = rastreador_srv.proximo_horario_agendado(datetime.now(), dia, hora)
+    rastreadores = db.listar_rastreadores()
+    ativos = [r for r in rastreadores if r["ativo"]]
+
+    st.caption("Cadastre palavras-chave e o app, sozinho, encontra os vídeos mais quentes, lê os comentários "
+               "e envia as dores e tendências para 🔥 Assuntos Quentes.")
+    if not obter_segredo("APIFY_API_TOKEN"):
+        st.warning("O Rastreador usa a Apify. Cadastre o token em ⚙️ Configurações para ele funcionar.")
+
+    if ativo and ativos:
+        st.success(f"🟢 **Piloto automático ligado** · {len(ativos)} palavra(s)-chave ativa(s) · "
+                   f"próxima rodada: **{db.DIAS_SEMANA[dia]}, {proxima:%d/%m às %H:%M}**")
+    elif ativo:
+        st.info("🟡 Piloto automático ligado, mas sem palavras-chave ativas. Cadastre abaixo.")
+    else:
+        st.warning("🔴 Piloto automático desligado. As buscas só rodam quando você clicar em ▶️ Executar.")
+    st.caption("ℹ️ As buscas rodam enquanto o app estiver aberto. Se o computador estiver desligado no horário, "
+               "a rodada acontece assim que você abrir o app. Para rodar com o app fechado, veja o `worker.py` no README.")
+
+    with st.expander("⏰ Agenda do piloto automático"):
+        with st.form("form_agenda"):
+            novo_ativo = st.toggle("Ligado", value=ativo)
+            c1, c2 = st.columns(2)
+            novo_dia = c1.selectbox("Dia da semana", list(db.DIAS_SEMANA), index=list(db.DIAS_SEMANA).index(dia),
+                                    format_func=db.DIAS_SEMANA.get)
+            h, m = rastreador_srv._hora_minuto(hora)
+            nova_hora = c2.time_input("Horário", value=time(h, m), step=1800)
+            if st.form_submit_button("💾 Salvar agenda", type="primary"):
+                db.set_config("rastreador_agendamento_ativo", "1" if novo_ativo else "0")
+                db.set_config("rastreador_dia_semana", novo_dia)
+                db.set_config("rastreador_hora", nova_hora.strftime("%H:%M"))
+                avisar("Agenda atualizada!", "⏰")
+                st.rerun()
+
+    with st.expander("➕ Novas palavras-chave", expanded=not rastreadores):
+        with st.form("form_rastreador", clear_on_submit=True):
+            palavras = st.text_area("Palavras-chave (uma por linha)",
+                                    placeholder="limpeza porcelanato manchado\ndicas para afiliados")
+            c1, c2 = st.columns(2)
+            plataforma_r = c1.selectbox("Onde buscar", db.PLATAFORMAS_BUSCA, format_func=ROTULOS_PLATAFORMA.get,
+                                        help="No Instagram a busca é feita pela hashtag equivalente "
+                                             "(ex.: #limpezaporcelanatomanchado).")
+            with c2:
+                persona_r = seletor_persona("rastreador_persona", "Para qual persona?")
+            c3, c4 = st.columns(2)
+            max_videos = c3.slider("Vídeos mais quentes por palavra", 1, 10, 5)
+            max_coment = c4.slider("Comentários lidos por vídeo", 20, 300, 100, step=10)
+            st.caption(f"💰 Cada rodada lê até **{max_videos * max_coment} comentários** por palavra-chave "
+                       "(isso consome créditos da Apify).")
+            if st.form_submit_button("Adicionar ao rastreador", type="primary"):
+                lista = [p.strip() for p in palavras.splitlines() if p.strip()]
+                criados = [p for p in lista
+                           if db.criar_rastreador(p, plataforma_r, persona_r, max_videos, max_coment)]
+                if not lista:
+                    st.error("Escreva pelo menos uma palavra-chave.")
+                else:
+                    repetidas = len(lista) - len(criados)
+                    avisar(f"{len(criados)} palavra(s)-chave adicionada(s)"
+                           + (f" · {repetidas} já existia(m)" if repetidas else "") + "!", "🤖")
+                    st.rerun()
+
+    if rastreadores:
+        c1, _ = st.columns([1, 3])
+        if c1.button("▶️ Executar todas agora", disabled=not ativos,
+                     help="Roda todas as palavras-chave ativas agora, em segundo plano."):
+            rastreador_srv.executar_em_segundo_plano(agendador)
+            avisar("Rodada iniciada em segundo plano! Acompanhe em 'Rodadas recentes'.", "🚀")
+            st.rerun()
+
+    for r in rastreadores:
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 2])
+            c1.markdown(f"{'🟢' if r['ativo'] else '⏸️'} **🔎 {r['palavra_chave']}** · "
+                        f"{ROTULOS_PLATAFORMA[r['plataforma']]} · {r['persona'] or 'Sem persona'}")
+            c1.caption(f"{r['max_videos']} vídeos × {r['max_comentarios']} comentários · "
+                       f"última rodada: {formatar_data(r['ultima_execucao'])}"
+                       + (f" ({ROTULOS_STATUS_EXECUCAO[r['ultimo_status']]})" if r["ultimo_status"] else "")
+                       + f" · {r['total_assuntos']} assuntos gerados")
+            b1, b2, b3 = c2.columns(3)
+            if b1.button("▶️", key=f"exec_r_{r['id']}", help="Executar agora"):
+                rastreador_srv.executar_em_segundo_plano(agendador, r["id"])
+                avisar(f"'{r['palavra_chave']}' rodando em segundo plano!", "🚀")
+                st.rerun()
+            if b2.button("⏸️" if r["ativo"] else "▶ Ativar", key=f"pausa_r_{r['id']}",
+                         help="Pausar" if r["ativo"] else "Reativar"):
+                db.atualizar_rastreador(r["id"], ativo=0 if r["ativo"] else 1)
+                st.rerun()
+            with b3.popover("🗑️", help="Excluir"):
+                st.write("Excluir este rastreador? Os assuntos já gerados continuam.")
+                if st.button("Confirmar", key=f"del_r_{r['id']}", type="primary"):
+                    db.excluir_rastreador(r["id"])
+                    avisar("Rastreador excluído.", "🗑️")
+                    st.rerun()
+
+    st.markdown("#### 🕘 Rodadas recentes")
+    painel_execucoes()

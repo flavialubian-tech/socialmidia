@@ -17,10 +17,16 @@ from urllib.parse import urlparse
 from services.llm import obter_segredo
 
 # Atores públicos da Apify Store para cada rede.
+# Se algum ator mudar de nome ou de formato, ajuste apenas aqui e em _input_* abaixo.
 ATORES_APIFY = {
     "tiktok": "clockworks/tiktok-comments-scraper",
     "instagram": "apify/instagram-comment-scraper",
     "youtube": "streamers/youtube-comments-scraper",
+}
+ATORES_BUSCA_APIFY = {
+    "tiktok": "clockworks/tiktok-scraper",
+    "instagram": "apify/instagram-hashtag-scraper",  # Instagram não tem busca por frase: usa hashtag
+    "youtube": "streamers/youtube-scraper",
 }
 
 
@@ -44,14 +50,36 @@ def url_valida(url: str) -> bool:
     return partes.scheme in ("http", "https") and bool(partes.netloc)
 
 
-def _input_apify(plataforma: str, url: str, limite: int) -> dict:
+def _input_apify(plataforma: str, urls: list[str], limite: int) -> dict:
+    """Entrada dos atores de comentários. `limite` = comentários por post."""
     if plataforma == "tiktok":
-        return {"postURLs": [url], "commentsPerPost": limite, "maxRepliesPerComment": 0}
+        return {"postURLs": urls, "commentsPerPost": limite, "maxRepliesPerComment": 0}
     if plataforma == "instagram":
-        return {"directUrls": [url], "resultsLimit": limite}
+        return {"directUrls": urls, "resultsLimit": limite}
     if plataforma == "youtube":
-        return {"startUrls": [{"url": url}], "maxComments": limite}
+        return {"startUrls": [{"url": u} for u in urls], "maxComments": limite}
     raise ColetaError("Plataforma não suportada pela coleta automática.")
+
+
+def hashtag_de(palavra_chave: str) -> str:
+    """'Limpeza porcelanato manchado' -> 'limpezaporcelanatomanchado'."""
+    import unicodedata
+
+    sem_acento = unicodedata.normalize("NFKD", palavra_chave).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", sem_acento.lower())
+
+
+def _input_busca(plataforma: str, palavra_chave: str, limite: int) -> dict:
+    """Entrada dos atores de busca de vídeos por palavra-chave."""
+    if plataforma == "tiktok":
+        return {"searchQueries": [palavra_chave], "resultsPerPage": limite, "searchSection": "/video",
+                "shouldDownloadVideos": False, "shouldDownloadCovers": False}
+    if plataforma == "instagram":
+        return {"hashtags": [hashtag_de(palavra_chave)], "resultsLimit": limite, "resultsType": "posts"}
+    if plataforma == "youtube":
+        return {"searchQueries": [palavra_chave], "maxResults": limite, "maxResultsShorts": limite,
+                "maxResultStreams": 0}
+    raise ColetaError("Plataforma não suportada pela busca automática.")
 
 
 def _primeiro(item: dict, *chaves: str):
@@ -79,38 +107,111 @@ def normalizar_item_apify(item: dict) -> dict | None:
     return {"autor": autor, "texto": str(texto).strip(), "curtidas": curtidas, "publicado_em": publicado}
 
 
-def coletar_apify(url: str, limite: int = 300) -> list[dict]:
+def executar_ator(ator: str, run_input: dict, limite_itens: int) -> list[dict]:
+    """Roda um ator da Apify e devolve os itens brutos do dataset."""
     token = obter_segredo("APIFY_API_TOKEN")
     if not token:
-        raise ColetaError("APIFY_API_TOKEN não configurado. Adicione no .env ou em ⚙️ Configurações, "
-                          "ou use a opção de colar os comentários.")
-    plataforma = detectar_plataforma(url)
-    if plataforma not in ATORES_APIFY:
-        raise ColetaError("URL não reconhecida. Use um link do TikTok, Instagram ou YouTube.")
+        raise ColetaError("APIFY_API_TOKEN não configurado. Adicione no .env ou em ⚙️ Configurações.")
 
     from apify_client import ApifyClient
 
     cliente = ApifyClient(token)
     try:
-        run = cliente.actor(ATORES_APIFY[plataforma]).call(run_input=_input_apify(plataforma, url, limite))
+        run = cliente.actor(ator).call(run_input=run_input)
     except Exception as exc:
-        raise ColetaError(f"Falha ao executar a coleta na Apify: {exc}") from exc
+        raise ColetaError(f"Falha ao executar '{ator}' na Apify: {exc}") from exc
     if not run:
-        raise ColetaError("A Apify não retornou resultado para esta coleta.")
+        raise ColetaError("A Apify não retornou resultado.")
 
     # apify-client 3.x devolve um objeto; versões 1.x/2.x devolvem dict.
     dataset_id = getattr(run, "default_dataset_id", None) or (run.get("defaultDatasetId") if isinstance(run, dict) else None)
     if not dataset_id:
-        raise ColetaError("A Apify não informou o dataset com os comentários.")
+        raise ColetaError("A Apify não informou o dataset com os resultados.")
+    return list(cliente.dataset(dataset_id).iterate_items(limit=limite_itens))
 
-    comentarios = []
-    for item in cliente.dataset(dataset_id).iterate_items(limit=limite):
-        normalizado = normalizar_item_apify(item)
-        if normalizado:
-            comentarios.append(normalizado)
+
+def coletar_comentarios_apify(urls: list[str], plataforma: str, limite_por_post: int = 100) -> list[dict]:
+    if plataforma not in ATORES_APIFY:
+        raise ColetaError("URL não reconhecida. Use um link do TikTok, Instagram ou YouTube.")
+    itens = executar_ator(ATORES_APIFY[plataforma], _input_apify(plataforma, urls, limite_por_post),
+                          limite_por_post * len(urls))
+    return [c for c in (normalizar_item_apify(i) for i in itens) if c]
+
+
+def coletar_apify(url: str, limite: int = 300) -> list[dict]:
+    """Coleta os comentários de um único post (modo URL do Radar)."""
+    if not obter_segredo("APIFY_API_TOKEN"):
+        raise ColetaError("APIFY_API_TOKEN não configurado. Adicione no .env ou em ⚙️ Configurações, "
+                          "ou use a opção de colar os comentários.")
+    comentarios = coletar_comentarios_apify([url], detectar_plataforma(url), limite)
     if not comentarios:
         raise ColetaError("Nenhum comentário encontrado. O post pode ser privado ou não ter comentários.")
     return comentarios
+
+
+# ---------------------------------------------------------------------------
+# Busca de vídeos por palavra-chave (Rastreador e Termômetro)
+# ---------------------------------------------------------------------------
+def _numero(valor) -> int:
+    if valor in (None, ""):
+        return 0
+    if isinstance(valor, (int, float)):
+        return int(valor)
+    texto = str(valor).strip().upper().replace(" ", "")
+    multiplicador = 1
+    if texto.endswith(("K", "M", "B")):
+        multiplicador = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[texto[-1]]
+        texto = texto[:-1].replace(",", ".")
+        try:
+            return int(float(texto) * multiplicador)
+        except ValueError:
+            return 0
+    digitos = re.sub(r"[^0-9]", "", texto)
+    return int(digitos) if digitos else 0
+
+
+def normalizar_video(item: dict) -> dict | None:
+    """Converte um resultado de busca (qualquer rede) para o formato padrão."""
+    url = _primeiro(item, "webVideoUrl", "url", "postUrl", "videoUrl")
+    if not url or not str(url).startswith("http"):
+        return None
+    autor = _primeiro(item, "ownerUsername", "channelName", "author")
+    if not autor and isinstance(item.get("authorMeta"), dict):
+        autor = item["authorMeta"].get("name")
+    if isinstance(autor, dict):
+        autor = autor.get("name") or autor.get("username")
+    return {
+        "url": str(url),
+        "titulo": str(_primeiro(item, "title", "text", "caption", "description") or "")[:300],
+        "autor": autor,
+        "views": _numero(_primeiro(item, "playCount", "viewCount", "videoViewCount", "videoPlayCount", "views")),
+        "curtidas": _numero(_primeiro(item, "diggCount", "likesCount", "likes")),
+        "comentarios": _numero(_primeiro(item, "commentCount", "commentsCount")),
+        "compartilhamentos": _numero(_primeiro(item, "shareCount", "sharesCount")),
+        "publicado_em": _primeiro(item, "createTimeISO", "timestamp", "date", "uploadDate"),
+    }
+
+
+def pontuar_video(video: dict) -> float:
+    """Engajamento ponderado: comentários e compartilhamentos valem mais que views."""
+    return (video["views"] * 0.01 + video["curtidas"] + video["comentarios"] * 5
+            + video["compartilhamentos"] * 3)
+
+
+def buscar_videos(palavra_chave: str, plataforma: str, quantidade: int = 5, multiplicador: int = 3) -> list[dict]:
+    """Busca vídeos da palavra-chave e devolve os `quantidade` mais quentes (por engajamento)."""
+    if plataforma not in ATORES_BUSCA_APIFY:
+        raise ColetaError(f"Busca por palavra-chave não disponível para '{plataforma}'.")
+    pedidos = max(quantidade * multiplicador, 10)
+    itens = executar_ator(ATORES_BUSCA_APIFY[plataforma], _input_busca(plataforma, palavra_chave, pedidos), pedidos)
+    vistos, videos = set(), []
+    for item in itens:
+        video = normalizar_video(item)
+        if video and video["url"] not in vistos:
+            vistos.add(video["url"])
+            videos.append(video)
+    videos.sort(key=pontuar_video, reverse=True)
+    return videos[:quantidade]
 
 
 _PREFIXO_AUTOR = re.compile(r"^@?([\w.]{2,30})\s*[:\-–]\s+(.+)$")

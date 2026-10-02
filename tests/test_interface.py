@@ -46,5 +46,5 @@ def test_radar_manual_pela_tela(monkeypatch):
     assert not botao.disabled
     botao.click().run(timeout=30)
     assert not at.exception, at.exception
-    assert len(db.listar_assuntos_quentes()) == 3
+    assert len(db.listar_assuntos_quentes()) == 4  # 3 tendências + 1 dor
     assert any("Resumo da audiência" in m.value for m in at.info)

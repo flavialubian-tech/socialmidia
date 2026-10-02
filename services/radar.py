@@ -22,7 +22,7 @@ SISTEMA = (
     "e apenas com JSON válido."
 )
 
-PROMPT_ANALISE = """Analise os comentários abaixo, coletados de um post ({plataforma}).
+PROMPT_ANALISE = """Analise os comentários abaixo, coletados de {origem} ({plataforma}).
 
 {contexto_persona}
 COMENTÁRIOS (formato: [curtidas] texto), ordenados dos mais curtidos para os menos:
@@ -137,15 +137,41 @@ def analisar_comentarios(
     persona: dict | None = None,
     plataforma: str = "rede social",
     llm: BaseChatModel | None = None,
+    palavra_chave: str | None = None,
 ) -> dict:
     texto = preparar_comentarios(comentarios)
     if not texto:
         raise scraper.ColetaError("Não há comentários com texto suficiente para analisar.")
+    origem = (f'vários vídeos em alta da busca "{palavra_chave}"' if palavra_chave else "um post")
     prompt = PROMPT_ANALISE.format(
-        plataforma=plataforma, contexto_persona=_contexto_persona(persona), comentarios=texto
+        origem=origem, plataforma=plataforma, contexto_persona=_contexto_persona(persona), comentarios=texto
     )
     bruta = gerar_json(prompt, SISTEMA, llm=llm)
     return normalizar_analise(bruta, (persona or {}).get("palavras_proibidas"))
+
+
+INTENSIDADE_DOR = {"alta": 80, "media": 60}  # dores de frequência baixa não viram assunto
+
+
+def registrar_assuntos(analise: dict, persona_id: int | None, analise_id: int,
+                       rastreador_id: int | None = None) -> list[int]:
+    """Envia tendências e dores (frequência alta/média) para a aba Assuntos Quentes."""
+    criados = []
+    for t in analise["tendencias"]:
+        descricao = t["motivo"] + (f"\n\nÂngulo sugerido: {t['angulo_sugerido']}" if t["angulo_sugerido"] else "")
+        novo = db.criar_assunto_quente(t["tema"], descricao, t["intensidade"], persona_id, analise_id,
+                                       tipo="tendencia", rastreador_id=rastreador_id)
+        if novo:
+            criados.append(novo)
+    for d in analise["dores"]:
+        if d["frequencia"] not in INTENSIDADE_DOR:
+            continue
+        descricao = "Dor do público" + (f" — “{d['evidencia']}”" if d["evidencia"] else "")
+        novo = db.criar_assunto_quente(d["dor"], descricao, INTENSIDADE_DOR[d["frequencia"]], persona_id,
+                                       analise_id, tipo="dor", rastreador_id=rastreador_id)
+        if novo:
+            criados.append(novo)
+    return criados
 
 
 def executar_radar(
@@ -155,12 +181,17 @@ def executar_radar(
     limite: int = 300,
     llm: BaseChatModel | None = None,
     progresso: Callable[[str], None] = lambda _msg: None,
+    metodo: str | None = None,
+    plataforma: str | None = None,
+    palavra_chave: str | None = None,
+    rastreador_id: int | None = None,
 ) -> ResultadoRadar:
     """Pipeline completo. Se `comentarios` vier preenchido, pula a coleta automática (modo manual)."""
     url = url.strip() or "manual"
-    plataforma = scraper.detectar_plataforma(url) if url != "manual" else "desconhecida"
-    metodo = "manual" if comentarios is not None else "apify"
-    busca_id = db.criar_busca(url, plataforma, metodo, persona_id)
+    if plataforma is None:
+        plataforma = scraper.detectar_plataforma(url) if url.startswith("http") else "desconhecida"
+    metodo = metodo or ("manual" if comentarios is not None else "apify")
+    busca_id = db.criar_busca(url, plataforma, metodo, persona_id, rastreador_id)
     persona = db.obter_persona(persona_id) if persona_id else None
 
     try:
@@ -176,16 +207,11 @@ def executar_radar(
         progresso(f"{total} comentários salvos. A IA está analisando...")
         if llm is None:
             llm = criar_llm(json_mode=True)
-        analise = analisar_comentarios(comentarios, persona, plataforma, llm=llm)
+        analise = analisar_comentarios(comentarios, persona, plataforma, llm=llm, palavra_chave=palavra_chave)
 
         analise_id = db.salvar_analise(busca_id, persona_id, analise, config_atual().rotulo)
         progresso("Registrando Assuntos Quentes...")
-        criados = []
-        for t in analise["tendencias"]:
-            descricao = t["motivo"] + (f"\n\nÂngulo sugerido: {t['angulo_sugerido']}" if t["angulo_sugerido"] else "")
-            novo = db.criar_assunto_quente(t["tema"], descricao, t["intensidade"], persona_id, analise_id)
-            if novo:
-                criados.append(novo)
+        criados = registrar_assuntos(analise, persona_id, analise_id, rastreador_id)
         db.atualizar_busca(busca_id, status="concluido", erro=None)
         return ResultadoRadar(busca_id, analise_id, total, analise, criados)
     except Exception as exc:

@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("SOCIALMIDIA_DB_PATH", BASE_DIR / "data" / "socialmidia.db"))
 
 # Incrementar sempre que uma migração for adicionada em MIGRATIONS.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Valores controlados (espelhados nos CHECKs do schema)
 PLATAFORMAS = ("instagram", "tiktok", "youtube", "multiplataforma")
@@ -39,6 +39,9 @@ STATUS_KANBAN_LABELS = {
 }
 NIVEIS_FUNIL = ("topo", "meio", "fundo")
 MARCOS_METRICAS = (7, 14)
+PLATAFORMAS_BUSCA = ("tiktok", "instagram", "youtube")
+DIAS_SEMANA = {"mon": "Segunda", "tue": "Terça", "wed": "Quarta", "thu": "Quinta",
+               "fri": "Sexta", "sat": "Sábado", "sun": "Domingo"}
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +252,56 @@ BEGIN
 END;
 """
 
+SCHEMA_V2 = """
+-- =========================================================
+-- MÓDULO 1 — RASTREADOR AUTOMÁTICO (piloto automático)
+-- =========================================================
+CREATE TABLE IF NOT EXISTS rastreadores (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    persona_id          INTEGER REFERENCES personas(id) ON DELETE SET NULL,
+    palavra_chave       TEXT    NOT NULL,
+    plataforma          TEXT    NOT NULL DEFAULT 'tiktok'
+                        CHECK (plataforma IN ('tiktok','instagram','youtube')),
+    max_videos          INTEGER NOT NULL DEFAULT 5   CHECK (max_videos BETWEEN 1 AND 20),
+    max_comentarios     INTEGER NOT NULL DEFAULT 100 CHECK (max_comentarios BETWEEN 10 AND 500),  -- por vídeo
+    ativo               INTEGER NOT NULL DEFAULT 1 CHECK (ativo IN (0,1)),
+    ultima_execucao     TEXT,
+    criado_em           TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS rastreador_execucoes (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    rastreador_id       INTEGER NOT NULL REFERENCES rastreadores(id) ON DELETE CASCADE,
+    busca_id            INTEGER REFERENCES radar_buscas(id) ON DELETE SET NULL,
+    gatilho             TEXT    NOT NULL DEFAULT 'agendado' CHECK (gatilho IN ('agendado','manual')),
+    status              TEXT    NOT NULL DEFAULT 'executando'
+                        CHECK (status IN ('executando','concluido','sem_resultados','erro')),
+    videos              TEXT    NOT NULL DEFAULT '[]',   -- JSON: vídeos analisados
+    total_comentarios   INTEGER NOT NULL DEFAULT 0,
+    assuntos_criados    INTEGER NOT NULL DEFAULT 0,
+    erro                TEXT,
+    iniciado_em         TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    finalizado_em       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_execucoes_rastreador ON rastreador_execucoes(rastreador_id, id);
+
+ALTER TABLE radar_buscas     ADD COLUMN rastreador_id INTEGER REFERENCES rastreadores(id) ON DELETE SET NULL;
+ALTER TABLE assuntos_quentes ADD COLUMN tipo TEXT NOT NULL DEFAULT 'tendencia';  -- tendencia | dor | manual
+ALTER TABLE assuntos_quentes ADD COLUMN rastreador_id INTEGER REFERENCES rastreadores(id) ON DELETE SET NULL;
+
+-- =========================================================
+-- MÓDULO 2 — campos extras do Termômetro e da geração
+-- =========================================================
+ALTER TABLE validacoes ADD COLUMN persona_id INTEGER REFERENCES personas(id) ON DELETE SET NULL;
+ALTER TABLE validacoes ADD COLUMN plataforma TEXT;
+ALTER TABLE validacoes ADD COLUMN score_dados INTEGER;              -- parte calculada com números reais
+ALTER TABLE validacoes ADD COLUMN score_ia INTEGER;                 -- parte avaliada pela IA
+ALTER TABLE validacoes ADD COLUMN metricas TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE validacoes ADD COLUMN analise TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE conteudos  ADD COLUMN plataforma TEXT;
+ALTER TABLE conteudos  ADD COLUMN extras TEXT NOT NULL DEFAULT '{}'; -- ganchos alternativos, CTA, duração...
+"""
+
 CONFIGURACOES_PADRAO = {
     "llm_provedor": "ollama",          # ollama | openai | anthropic
     "llm_modelo_ollama": "llama3.1",
@@ -256,6 +309,11 @@ CONFIGURACOES_PADRAO = {
     "llm_modelo_anthropic": "claude-sonnet-5-5",
     "llm_temperatura": "0.7",
     "radar_limite_comentarios": "300",
+    "rastreador_agendamento_ativo": "1",
+    "rastreador_dia_semana": "fri",
+    "rastreador_hora": "08:00",
+    "termometro_max_videos": "10",
+    "termometro_comentarios_concorrentes": "40",
     "metricas_limiar_views": "10000",  # acima disso o Dashboard sugere "Reciclar este tema"
     "metricas_limiar_saves": "500",
 }
@@ -263,6 +321,7 @@ CONFIGURACOES_PADRAO = {
 # Migrações futuras: {versao: "SQL"}. Executadas em ordem quando user_version < versao.
 MIGRATIONS: dict[int, str] = {
     1: SCHEMA_V1,
+    2: SCHEMA_V2,
 }
 
 
@@ -415,11 +474,13 @@ def excluir_persona(persona_id: int) -> None:
 _ANALISE_JSON = ("dores", "dicionario", "tendencias")
 
 
-def criar_busca(url: str, plataforma: str, metodo_coleta: str, persona_id: int | None = None) -> int:
+def criar_busca(url: str, plataforma: str, metodo_coleta: str, persona_id: int | None = None,
+                rastreador_id: int | None = None) -> int:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO radar_buscas (url, plataforma, metodo_coleta, persona_id) VALUES (?, ?, ?, ?)",
-            (url, plataforma, metodo_coleta, persona_id),
+            "INSERT INTO radar_buscas (url, plataforma, metodo_coleta, persona_id, rastreador_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (url, plataforma, metodo_coleta, persona_id, rastreador_id),
         )
         return cur.lastrowid
 
@@ -492,6 +553,13 @@ def salvar_analise(busca_id: int, persona_id: int | None, analise: dict, modelo_
         return cur.lastrowid
 
 
+def analise_da_busca(busca_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM analises_audiencia WHERE busca_id = ? ORDER BY id DESC LIMIT 1",
+                           (busca_id,)).fetchone()
+    return obter_analise(row["id"]) if row else None
+
+
 def obter_analise(analise_id: int) -> dict | None:
     with get_connection() as conn:
         row = conn.execute(
@@ -516,6 +584,8 @@ def criar_assunto_quente(
     analise_id: int | None = None,
     origem: str = "radar",
     conteudo_origem_id: int | None = None,
+    tipo: str = "tendencia",
+    rastreador_id: int | None = None,
 ) -> int | None:
     """Cria o assunto; retorna None se já existe um igual ainda ativo para a mesma persona."""
     tema = tema.strip()
@@ -530,16 +600,20 @@ def criar_assunto_quente(
             return None
         cur = conn.execute(
             """INSERT INTO assuntos_quentes (tema, descricao, intensidade, persona_id, analise_id,
-                                             origem, conteudo_origem_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (tema, descricao, intensidade, persona_id, analise_id, origem, conteudo_origem_id),
+                                             origem, conteudo_origem_id, tipo, rastreador_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (tema, descricao, intensidade, persona_id, analise_id, origem, conteudo_origem_id,
+             tipo, rastreador_id),
         )
         return cur.lastrowid
 
 
 def listar_assuntos_quentes(persona_id: int | None = None, status: tuple[str, ...] | None = ("novo",)) -> list[dict]:
-    sql = """SELECT q.*, p.nome AS persona FROM assuntos_quentes q
-             LEFT JOIN personas p ON p.id = q.persona_id WHERE 1 = 1"""
+    sql = """SELECT q.*, p.nome AS persona, r.palavra_chave AS rastreador
+             FROM assuntos_quentes q
+             LEFT JOIN personas p ON p.id = q.persona_id
+             LEFT JOIN rastreadores r ON r.id = q.rastreador_id
+             WHERE 1 = 1"""
     params: list[Any] = []
     if persona_id:
         sql += " AND q.persona_id = ?"
@@ -555,6 +629,229 @@ def listar_assuntos_quentes(persona_id: int | None = None, status: tuple[str, ..
 def atualizar_status_assunto(assunto_id: int, status: str) -> None:
     with get_connection() as conn:
         conn.execute("UPDATE assuntos_quentes SET status = ? WHERE id = ?", (status, assunto_id))
+
+
+def obter_assunto(assunto_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM assuntos_quentes WHERE id = ?", (assunto_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def contexto_audiencia(persona_id: int | None, limite_analises: int = 3) -> dict:
+    """Junta dores e dicionário das análises mais recentes da persona (usado pelo Módulo 2)."""
+    if not persona_id:
+        return {"dores": [], "dicionario": []}
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT dores, dicionario FROM analises_audiencia WHERE persona_id = ? ORDER BY id DESC LIMIT ?",
+            (persona_id, limite_analises),
+        ).fetchall()
+    dores, termos, vistos = [], [], set()
+    for r in rows:
+        dores += [d["dor"] for d in from_json(r["dores"]) if isinstance(d, dict) and d.get("dor")]
+        for t in from_json(r["dicionario"]):
+            if isinstance(t, dict) and t.get("termo") and t["termo"].lower() not in vistos:
+                vistos.add(t["termo"].lower())
+                termos.append(t)
+    return {"dores": list(dict.fromkeys(dores))[:10], "dicionario": termos[:15]}
+
+
+# ---------------------------------------------------------------------------
+# Rastreador Automático (Módulo 1 — piloto automático)
+# ---------------------------------------------------------------------------
+def criar_rastreador(palavra_chave: str, plataforma: str = "tiktok", persona_id: int | None = None,
+                     max_videos: int = 5, max_comentarios: int = 100) -> int | None:
+    """Retorna None se já existe um rastreador igual (mesma palavra, rede e persona)."""
+    palavra_chave = " ".join(palavra_chave.split())
+    with get_connection() as conn:
+        if conn.execute(
+            "SELECT 1 FROM rastreadores WHERE lower(palavra_chave) = lower(?) AND plataforma = ? AND persona_id IS ?",
+            (palavra_chave, plataforma, persona_id),
+        ).fetchone():
+            return None
+        cur = conn.execute(
+            """INSERT INTO rastreadores (palavra_chave, plataforma, persona_id, max_videos, max_comentarios)
+               VALUES (?, ?, ?, ?, ?)""",
+            (palavra_chave, plataforma, persona_id, max_videos, max_comentarios),
+        )
+        return cur.lastrowid
+
+
+def listar_rastreadores(somente_ativos: bool = False) -> list[dict]:
+    sql = """SELECT r.*, p.nome AS persona,
+                    (SELECT e.status FROM rastreador_execucoes e WHERE e.rastreador_id = r.id
+                     ORDER BY e.id DESC LIMIT 1) AS ultimo_status,
+                    (SELECT COALESCE(SUM(e.assuntos_criados), 0) FROM rastreador_execucoes e
+                     WHERE e.rastreador_id = r.id) AS total_assuntos
+             FROM rastreadores r LEFT JOIN personas p ON p.id = r.persona_id"""
+    if somente_ativos:
+        sql += " WHERE r.ativo = 1"
+    sql += " ORDER BY r.ativo DESC, r.palavra_chave COLLATE NOCASE"
+    with get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql)]
+
+
+def obter_rastreador(rastreador_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM rastreadores WHERE id = ?", (rastreador_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def atualizar_rastreador(rastreador_id: int, **campos: Any) -> None:
+    permitidos = {"palavra_chave", "plataforma", "persona_id", "max_videos", "max_comentarios",
+                  "ativo", "ultima_execucao"}
+    campos = {k: v for k, v in campos.items() if k in permitidos}
+    if not campos:
+        return
+    sets = ", ".join(f"{k} = ?" for k in campos)
+    with get_connection() as conn:
+        conn.execute(f"UPDATE rastreadores SET {sets} WHERE id = ?", (*campos.values(), rastreador_id))
+
+
+def excluir_rastreador(rastreador_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM rastreadores WHERE id = ?", (rastreador_id,))
+
+
+def iniciar_execucao(rastreador_id: int, gatilho: str = "agendado") -> int | None:
+    """Registra o início; retorna None se o rastreador já está rodando (evita execução dupla)."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rodando = conn.execute(
+            """SELECT 1 FROM rastreador_execucoes WHERE rastreador_id = ? AND status = 'executando'
+               AND iniciado_em > datetime('now','localtime','-2 hours')""",
+            (rastreador_id,),
+        ).fetchone()
+        if rodando:
+            return None
+        cur = conn.execute("INSERT INTO rastreador_execucoes (rastreador_id, gatilho) VALUES (?, ?)",
+                           (rastreador_id, gatilho))
+        return cur.lastrowid
+
+
+def finalizar_execucao(execucao_id: int, status: str, **campos: Any) -> None:
+    permitidos = {"busca_id", "videos", "total_comentarios", "assuntos_criados", "erro"}
+    campos = {k: v for k, v in campos.items() if k in permitidos}
+    if "videos" in campos:
+        campos["videos"] = to_json(campos["videos"])
+    sets = "".join(f", {k} = ?" for k in campos)
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE rastreador_execucoes SET status = ?, finalizado_em = datetime('now','localtime'){sets} "
+            "WHERE id = ?",
+            (status, *campos.values(), execucao_id),
+        )
+        if status != "erro":  # em caso de erro, o agendador tenta de novo mais tarde
+            conn.execute(
+                """UPDATE rastreadores SET ultima_execucao = datetime('now','localtime')
+                   WHERE id = (SELECT rastreador_id FROM rastreador_execucoes WHERE id = ?)""",
+                (execucao_id,),
+            )
+
+
+def listar_execucoes(rastreador_id: int | None = None, limite: int = 30) -> list[dict]:
+    sql = """SELECT e.*, r.palavra_chave, r.plataforma FROM rastreador_execucoes e
+             JOIN rastreadores r ON r.id = e.rastreador_id"""
+    params: list[Any] = []
+    if rastreador_id:
+        sql += " WHERE e.rastreador_id = ?"
+        params.append(rastreador_id)
+    sql += " ORDER BY e.id DESC LIMIT ?"
+    params.append(limite)
+    with get_connection() as conn:
+        return [row_to_dict(r, ("videos",)) for r in conn.execute(sql, params)]
+
+
+def ha_execucao_em_andamento() -> bool:
+    with get_connection() as conn:
+        return conn.execute(
+            """SELECT 1 FROM rastreador_execucoes WHERE status = 'executando'
+               AND iniciado_em > datetime('now','localtime','-2 hours') LIMIT 1"""
+        ).fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# Módulo 2 — Validações (Termômetro) e Conteúdos
+# ---------------------------------------------------------------------------
+_VALIDACAO_JSON = ("concorrentes", "metricas", "analise")
+_CONTEUDO_JSON = ("roteiro", "hashtags", "referencias", "extras")
+
+
+def salvar_validacao(tema: str, score: int | None, score_dados: int | None, score_ia: int | None,
+                     concorrentes: list, lacuna: str, metricas: dict, analise: dict,
+                     plataforma: str | None = None, persona_id: int | None = None,
+                     assunto_id: int | None = None) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO validacoes (tema, score_viralizacao, score_dados, score_ia, concorrentes, lacuna,
+                                       metricas, analise, plataforma, persona_id, assunto_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (tema, score, score_dados, score_ia, to_json(concorrentes), lacuna, to_json(metricas or {}),
+             to_json(analise or {}), plataforma, persona_id, assunto_id),
+        )
+        return cur.lastrowid
+
+
+def obter_validacao(validacao_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM validacoes WHERE id = ?", (validacao_id,)).fetchone()
+    return row_to_dict(row, _VALIDACAO_JSON)
+
+
+def validacao_recente(tema: str, plataforma: str, dias: int = 7) -> dict | None:
+    """Reaproveita uma validação recente do mesmo tema (evita gastar créditos da Apify de novo)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT * FROM validacoes WHERE lower(tema) = lower(?) AND plataforma = ?
+               AND criado_em >= datetime('now','localtime', ?) ORDER BY id DESC LIMIT 1""",
+            (tema.strip(), plataforma, f"-{int(dias)} days"),
+        ).fetchone()
+    return row_to_dict(row, _VALIDACAO_JSON)
+
+
+def listar_validacoes(limite: int = 30) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM validacoes ORDER BY id DESC LIMIT ?", (limite,))
+        return [row_to_dict(r, _VALIDACAO_JSON) for r in rows]
+
+
+def registrar_historico(conteudo_id: int, evento: str, detalhes: str = "") -> None:
+    with get_connection() as conn:
+        conn.execute("INSERT INTO historico_conteudo (conteudo_id, evento, detalhes) VALUES (?, ?, ?)",
+                     (conteudo_id, evento, detalhes))
+
+
+def criar_conteudo(titulo: str, persona_id: int | None = None, assunto_id: int | None = None,
+                   validacao_id: int | None = None, funil: str | None = None, formato: str | None = None,
+                   plataforma: str | None = None, gancho: str = "", roteiro: list | None = None,
+                   legenda: str = "", hashtags: list | None = None, referencias: list | None = None,
+                   extras: dict | None = None, status: str = "roteiro_pronto",
+                   conteudo_pai_id: int | None = None) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO conteudos (titulo, persona_id, assunto_id, validacao_id, funil, formato, plataforma,
+                                      gancho, roteiro, legenda, hashtags, referencias, extras, status,
+                                      conteudo_pai_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (titulo.strip(), persona_id, assunto_id, validacao_id, funil, formato, plataforma, gancho,
+             to_json(roteiro or []), legenda, to_json(hashtags or []), to_json(referencias or []),
+             to_json(extras or {}), status, conteudo_pai_id),
+        )
+        conteudo_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO historico_conteudo (conteudo_id, evento, detalhes) VALUES (?, 'criado', ?)",
+            (conteudo_id, f"Criado na Máquina de Conteúdo ({formato or 'formato livre'}, funil {funil or '-'})"),
+        )
+        if assunto_id:
+            conn.execute("UPDATE assuntos_quentes SET status = 'em_uso' WHERE id = ? AND status = 'novo'",
+                         (assunto_id,))
+    return conteudo_id
+
+
+def obter_conteudo(conteudo_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM conteudos WHERE id = ?", (conteudo_id,)).fetchone()
+    return row_to_dict(row, _CONTEUDO_JSON)
 
 
 # ---------------------------------------------------------------------------
