@@ -1,0 +1,32 @@
+# =============================================================
+# Social Mídia Autônoma — dependências
+# Python 3.10+ recomendado (testado em 3.11)
+# Instalação:  pip install -r requirements.txt
+# =============================================================
+
+# --- Interface e dados ---------------------------------------
+streamlit>=1.40
+pandas>=2.2
+plotly>=5.24
+python-dotenv>=1.0
+
+# --- LLMs (LangChain + provedores) ---------------------------
+# Use o provedor que preferir: OpenAI, Anthropic (Claude) ou Ollama (local, gratuito).
+langchain-core>=0.3
+langchain-openai>=0.2
+langchain-anthropic>=0.3
+langchain-ollama>=0.2
+
+# --- Pesquisa / Web scraping (Módulos 1 e 2) -----------------
+requests>=2.32
+beautifulsoup4>=4.12
+apify-client>=1.8
+# selenium>=4.25          # opcional: só se precisar de scraping com navegador
+schedule>=1.2              # buscas agendadas em background (v2)
+
+# --- Mídia (Módulo 4) ----------------------------------------
+Pillow>=10.4
+moviepy>=2.1
+numpy>=1.26
+# Whisper instala o PyTorch (~2 GB). Também exige o FFmpeg instalado no sistema.
+openai-whisper>=20240930
