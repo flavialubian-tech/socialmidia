@@ -135,8 +135,12 @@ quentes de cada palavra, lê os comentários e envia **dores e tendências** par
 ## Módulo 4 — Estúdio de Produção
 
 ### 🎬 Vídeo Automático
-1. **Etapa 1**: envie o vídeo bruto (pode vincular a um conteúdo do Cofre). O app **corta os
-   silêncios** (sensibilidade ajustável) e **transcreve** com o Whisper, palavra por palavra.
+1. **Etapa 1**: envie o vídeo bruto (pode vincular a um conteúdo do Cofre). O app **transcreve** com o
+   Whisper, palavra por palavra, e **corta**:
+   - as **pausas**: pelo volume do áudio e pelos intervalos entre as palavras. Com ruído de fundo
+     (ventilador, ar-condicionado), a sensibilidade se ajusta sozinha;
+   - os **vícios de linguagem** ("ééé", "hum", "ahn", "hã"...), cada um inteiro, mesmo colado na fala.
+     Em "Ajustes finos" dá para incluir outras palavras (ex.: "tipo, né"); essas saem sempre que aparecem.
 2. Revise: veja o vídeo cortado e **corrija palavras** da transcrição, se precisar.
 3. **Etapa 2**: escolha o estilo e renderize:
    - **Legendas sincronizadas** (2–4 palavras por vez, palavra falada em destaque por cor ou pílula,

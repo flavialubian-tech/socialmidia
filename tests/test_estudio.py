@@ -50,6 +50,44 @@ def test_detectar_falas_sintetico():
     assert video.detectar_falas(np.zeros(sr, dtype=np.float32), sr) == []
 
 
+def test_limiar_sobe_com_ruido_de_fundo():
+    """Ruído de ventilador nas pausas (-28 dB) ficava acima do limiar fixo de -35 dB: nada era cortado."""
+    sr = 16000
+    t = np.arange(sr * 6) / sr
+    fala = (t < 2) | (t > 3.5)
+    ruido = 0.02 * np.random.default_rng(0).standard_normal(len(t))
+    amostras = (0.5 * np.sin(2 * np.pi * 200 * t) * fala + ruido).astype(np.float32)
+    trechos = video.detectar_falas(amostras, sr, limiar_db=-35, min_silencio=0.45, margem=0.1)
+    assert len(trechos) == 2 and trechos[0][1] < 2.3 and trechos[1][0] > 3.2
+
+
+def _p(texto, inicio, fim):
+    return {"texto": texto, "inicio": inicio, "fim": fim}
+
+
+def test_eh_muleta():
+    for texto in ("ééé", "Éé...", "hum", "Hmm,", "ahn", "Ah,", "hã", "eh"):
+        assert video.eh_muleta(_p(texto, 0, 0.3)), texto
+    for texto in ("um", "uma", "é", "e", "né", "tipo", "então", "uhum"):
+        assert not video.eh_muleta(_p(texto, 0, 0.2)), texto
+    assert video.eh_muleta(_p("é", 0, 0.8))  # "éééé" esticado que o Whisper escreveu como "é"
+    assert video.eh_muleta(_p("Tipo,", 0, 0.2), extras=["tipo", " né"])
+
+
+def test_trechos_por_palavras_corta_vicios_e_pausas():
+    palavras = [_p("Hoje", 0.0, 0.3), _p("eu", 0.32, 0.45), _p("ééé", 0.47, 1.2), _p("vou", 1.22, 1.4),
+                _p("mostrar", 1.42, 1.8), _p("isso", 3.0, 3.4)]  # pausa de 1.2 s antes de "isso"
+    trechos, removidas = video.trechos_por_palavras(palavras, 4.0, min_silencio=0.45, margem=0.1)
+    assert [r["texto"] for r in removidas] == ["ééé"]
+    assert trechos == [(0.0, 0.47), (1.2, 1.9), (2.9, 3.5)]
+    novas = video.remapear_palavras([p for p in palavras if p["texto"] != "ééé"], trechos)
+    assert [p["texto"] for p in novas] == ["Hoje", "eu", "vou", "mostrar", "isso"]
+    assert novas[2]["inicio"] == pytest.approx(0.47 + 0.02) and novas[-1]["inicio"] == pytest.approx(0.47 + 0.7 + 0.1)
+    sem_corte, _ = video.trechos_por_palavras(palavras, 4.0, remover_muletas=False)
+    assert len(sem_corte) == 2  # o "ééé" fica, só a pausa longa sai
+    assert video.intersectar([(0, 2), (3, 5)], [(1, 4)]) == [(1, 2), (3, 4)]
+
+
 # --- Legendas, ênfase e zoom -----------------------------------------------------
 def test_agrupar_legendas():
     paginas = video.agrupar_legendas(PALAVRAS, max_palavras=3)
@@ -94,10 +132,11 @@ def test_pipeline_video_completo(video_bruto):
     cid = db.criar_conteudo("Post", gancho="Pare de errar no piso")
     job = estudio.novo_video("meu vídeo.mp4", video_bruto.read_bytes(), "Teste", cid)
     progresso = []
-    dados = estudio.etapa_cortar(job, transcrever_fn=lambda caminho: PALAVRAS,
+    dados = estudio.etapa_cortar(job, transcrever_fn=lambda caminho, **_: PALAVRAS,
                                  progresso=lambda m, p: progresso.append(p))
     assert dados["duracao_final"] < dados["duracao_original"] - 1.0  # silêncio de 1.5 s removido
     assert dados["trechos"] == 2 and len(dados["inicios"]) == 2 and progresso[-1] == 1.0
+    assert dados["palavras"] and dados["palavras"][-1]["fim"] <= dados["duracao_final"] + 0.05
     assert db.obter_job(job)["status"] == "pendente"
 
     cfg = video.ConfigEdicao(formato="original", titulo="Pare de errar no piso")
@@ -120,7 +159,7 @@ def test_pipeline_video_completo(video_bruto):
 
 
 def test_sem_whisper_mantem_o_corte(video_bruto):
-    def sem_whisper(_):
+    def sem_whisper(_, **__):
         raise video.VideoError("O Whisper não está instalado.")
 
     job = estudio.novo_video("v.mp4", video_bruto.read_bytes())
@@ -140,6 +179,23 @@ def test_video_sem_fala_da_erro_amigavel(tmp_path):
     with pytest.raises(video.VideoError, match="Não encontrei fala"):
         estudio.etapa_cortar(job, gerar_legendas=False)
     assert db.obter_job(job)["status"] == "erro"
+
+
+def test_corte_remove_vicio_no_video(video_bruto):
+    """Um "ééé" no meio da fala (som alto, sem silêncio) só sai pela transcrição."""
+    palavras = [_p("Olha", 0.1, 0.5), _p("ééé", 0.55, 1.5), _p("isso", 1.55, 1.95), _p("aqui", 3.6, 4.0)]
+    recebido = {}
+
+    def falso_whisper(caminho, **opcoes):
+        recebido.update(opcoes)
+        return palavras
+
+    job = estudio.novo_video("v.mp4", video_bruto.read_bytes())
+    dados = estudio.etapa_cortar(job, transcrever_fn=falso_whisper)
+    assert recebido == {"com_hesitacoes": True}
+    assert [m["texto"] for m in dados["muletas"]] == ["ééé"]
+    assert [p["texto"] for p in dados["palavras"]] == ["Olha", "isso", "aqui"]
+    assert dados["duracao_final"] < 2.5  # ~6 s → só as três palavras com respiro
 
 
 # --- Carrossel -------------------------------------------------------------------

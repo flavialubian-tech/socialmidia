@@ -63,13 +63,18 @@ with aba_video:
         st.subheader("1️⃣ Enviar o vídeo bruto")
         arquivo = st.file_uploader("Vídeo gravado (MP4, MOV...)", type=FORMATOS_VIDEO, key="m4_upload")
         conteudo = seletor_conteudo("m4_video_conteudo", "Vincular a um conteúdo do Cofre (opcional)", False)
-        c1, c2 = st.columns(2)
-        cortar = c1.toggle("✂️ Cortar silêncios", value=True)
-        legendas = c2.toggle("📝 Gerar legendas (Whisper)", value=True)
+        c1, c2, c3 = st.columns(3)
+        cortar = c1.toggle("✂️ Cortar pausas", value=True)
+        muletas = c2.toggle("🗣️ Cortar \"ééé\", \"hum\", \"ahn\"", value=True, disabled=not cortar,
+                            help="Usa o Whisper para achar os vícios de linguagem e remove cada um inteiro.")
+        legendas = c3.toggle("📝 Gerar legendas (Whisper)", value=True)
         with st.expander("⚙️ Ajustes finos do corte"):
+            extras = st.text_input("Outras palavras para cortar (separadas por vírgula)", placeholder="tipo, né",
+                                   help="Cuidado: palavras como \"né\" e \"tipo\" saem SEMPRE que aparecerem.")
             limiar = st.slider("Sensibilidade do silêncio (dB)", -55, -20, -35,
                                help="Mais perto de -20 corta mais (inclusive falas baixas). "
-                                    "Mais perto de -55 corta só silêncio absoluto.")
+                                    "Mais perto de -55 corta só silêncio absoluto. Com ruído de fundo "
+                                    "(ventilador, ar-condicionado), o app sobe esse valor sozinho.")
             min_silencio = st.slider("Pausa mínima para cortar (s)", 0.2, 1.5, 0.45, 0.05,
                                      help="Pausas menores que isso ficam (respiração natural).")
             margem = st.slider("Respiro antes/depois de cada fala (s)", 0.0, 0.4, 0.12, 0.02)
@@ -80,6 +85,8 @@ with aba_video:
                                           conteudo["titulo"] if conteudo else "", conteudo["id"] if conteudo else None)
                 st.session_state["m4_job"] = novo
                 estudio.etapa_cortar(novo, limiar, min_silencio, margem, cortar, legendas, usar_gpu=gpu,
+                                     remover_muletas=cortar and muletas,
+                                     muletas_extras=[e.strip() for e in extras.split(",") if e.strip()],
                                      progresso=lambda msg, p: barra.progress(min(1.0, p), text=msg))
                 st.rerun()
             except video.VideoError as exc:
@@ -98,12 +105,17 @@ with aba_video:
         # ---- 2. Revisão ----------------------------------------------------
         st.markdown("#### 2️⃣ Revisar corte e legendas")
         original, final = dados.get("duracao_original", 0), dados.get("duracao_final", 0)
-        m1, m2, m3, m4 = st.columns(4)
+        muletas_removidas = dados.get("muletas", [])
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Duração original", seg(original))
         m2.metric("Depois do corte", seg(final),
                   f"-{(1 - final / original) * 100:.0f}%" if original else None, delta_color="off")
-        m3.metric("Trechos", dados.get("trechos", 1))
-        m4.metric("Palavras transcritas", len(dados.get("palavras", [])))
+        m3.metric("Cortes", max(0, dados.get("trechos", 1) - 1))
+        m4.metric("Vícios removidos", len(muletas_removidas))
+        m5.metric("Palavras transcritas", len(dados.get("palavras", [])))
+        if muletas_removidas:
+            st.caption("🗣️ Removidos: " + ", ".join(f"“{m['texto']}” ({seg(m['inicio'])})"
+                                                    for m in muletas_removidas[:30]))
         if dados.get("aviso_transcricao"):
             st.warning(f"Legendas indisponíveis: {dados['aviso_transcricao']}")
         if (pasta / "cortado.mp4").exists():
