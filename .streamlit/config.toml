@@ -1,0 +1,6 @@
+[server]
+# Vídeos brutos costumam passar de 200 MB (limite padrão do Streamlit)
+maxUploadSize = 4096
+
+[browser]
+gatherUsageStats = false
