@@ -171,13 +171,49 @@ def cortar_silencios(entrada: str | Path, saida: str | Path, limiar_db: float = 
 # ===========================================================================
 # 3. Transcrição (Whisper)
 # ===========================================================================
-def tem_gpu() -> bool:
+@lru_cache(maxsize=1)
+def diagnostico_gpu() -> dict:
+    """Verifica se a placa NVIDIA realmente roda com o PyTorch instalado.
+
+    `torch.cuda.is_available()` pode dizer que sim mesmo quando a versão do PyTorch não tem
+    suporte ao modelo da placa (ex.: GTX 10xx com o PyTorch para CUDA 12.8). Por isso fazemos
+    uma conta pequena na placa para confirmar.
+    """
     try:
         import torch
-
-        return bool(torch.cuda.is_available())
     except Exception:
-        return False
+        return {"status": "sem_torch"}
+    info = {"torch": torch.__version__, "cuda": getattr(torch.version, "cuda", None)}
+    if not torch.cuda.is_available():
+        return {**info, "status": "sem_cuda"}
+    try:
+        info["nome"] = torch.cuda.get_device_name(0)
+        info["capacidade"] = "sm_%d%d" % torch.cuda.get_device_capability(0)
+    except Exception:
+        pass
+    try:
+        (torch.ones(4, device="cuda") * 2).sum().item()
+        return {**info, "status": "ok"}
+    except Exception as exc:
+        return {**info, "status": "incompativel", "erro": str(exc).splitlines()[0]}
+
+
+def tem_gpu() -> bool:
+    return diagnostico_gpu()["status"] == "ok"
+
+
+def texto_diagnostico_gpu() -> str:
+    """Frase curta para mostrar na interface."""
+    d = diagnostico_gpu()
+    nome = d.get("nome", "placa NVIDIA")
+    if d["status"] == "ok":
+        return f"🟢 GPU em uso: {nome}"
+    if d["status"] == "incompativel":
+        return (f"🟠 {nome} ({d.get('capacidade', '?')}) encontrada, mas o PyTorch {d.get('torch')} instalado "
+                "não tem suporte a ela. O app vai usar a CPU (mais lento). Veja no README como instalar a versão certa.")
+    if d["status"] == "sem_cuda":
+        return "⚪ GPU NVIDIA não detectada pelo PyTorch: rodando na CPU (veja no README como ativar a placa)."
+    return "⚪ PyTorch não instalado."
 
 
 def modelo_padrao() -> str:
@@ -205,8 +241,16 @@ def transcrever(caminho: str | Path, modelo: str | None = None, idioma: str = "p
                          "e o PyTorch com suporte à sua placa NVIDIA.") from exc
     audio = audio_mono(caminho)
     gpu = tem_gpu()
-    modelo_whisper = _carregar_whisper(modelo or modelo_padrao(), "cuda" if gpu else "cpu")
-    resultado = modelo_whisper.transcribe(audio, language=idioma, word_timestamps=True, fp16=gpu, verbose=None)
+    try:
+        modelo_whisper = _carregar_whisper(modelo or modelo_padrao(), "cuda" if gpu else "cpu")
+        resultado = modelo_whisper.transcribe(audio, language=idioma, word_timestamps=True, fp16=gpu, verbose=None)
+    except RuntimeError as exc:
+        if not gpu:
+            raise VideoError(f"Falha ao transcrever com o Whisper: {str(exc).splitlines()[0]}") from exc
+        # a placa falhou no meio do caminho (driver, memória, versão do PyTorch): tenta de novo na CPU
+        _carregar_whisper.cache_clear()
+        modelo_whisper = _carregar_whisper(modelo or "small", "cpu")
+        resultado = modelo_whisper.transcribe(audio, language=idioma, word_timestamps=True, fp16=False, verbose=None)
     palavras = []
     for segmento in resultado.get("segments", []):
         for p in segmento.get("words", []):

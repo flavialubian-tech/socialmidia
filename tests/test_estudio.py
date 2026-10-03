@@ -180,3 +180,68 @@ def test_gerar_carrossel_com_template_e_zip(tmp_path):
 def test_salvar_fonte_invalida(tmp_path):
     with pytest.raises(OSError):
         estudio.salvar_fonte("falsa.ttf", b"isto nao e uma fonte")
+
+
+# --- GPU incompatível: cai para a CPU sem quebrar ------------------------------
+def test_gpu_incompativel_vira_cpu(monkeypatch):
+    import sys
+    import types
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def get_device_name(_):
+            return "NVIDIA GeForce GTX 1060"
+
+        @staticmethod
+        def get_device_capability(_):
+            return (6, 1)
+
+    def ones(*_a, **_k):
+        raise RuntimeError("CUDA error: no kernel image is available for execution on the device")
+
+    fake_torch = types.SimpleNamespace(__version__="2.11.0+cu128", version=types.SimpleNamespace(cuda="12.8"),
+                                       cuda=FakeCuda, ones=ones)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    video.diagnostico_gpu.cache_clear()
+    try:
+        d = video.diagnostico_gpu()
+        assert d["status"] == "incompativel" and d["capacidade"] == "sm_61"
+        assert video.tem_gpu() is False
+        assert "GTX 1060" in video.texto_diagnostico_gpu() and "CPU" in video.texto_diagnostico_gpu()
+        assert video.modelo_padrao() == "small"
+    finally:
+        video.diagnostico_gpu.cache_clear()
+
+
+def test_transcricao_cai_para_cpu_se_a_gpu_falhar(monkeypatch, video_bruto):
+    import sys
+    import types
+
+    dispositivos = []
+
+    class Modelo:
+        def __init__(self, dispositivo):
+            self.dispositivo = dispositivo
+
+        def transcribe(self, audio, **kw):
+            if self.dispositivo == "cuda":
+                raise RuntimeError("CUDA error: no kernel image is available for execution on the device")
+            return {"segments": [{"words": [{"word": " Olá", "start": 0.1, "end": 0.4}]}]}
+
+    def load_model(nome, device):
+        dispositivos.append((nome, device))
+        return Modelo(device)
+
+    monkeypatch.setitem(sys.modules, "whisper", types.SimpleNamespace(load_model=load_model))
+    monkeypatch.setattr(video, "tem_gpu", lambda: True)
+    video._carregar_whisper.cache_clear()
+    try:
+        palavras = video.transcrever(video_bruto, modelo="medium")
+    finally:
+        video._carregar_whisper.cache_clear()
+    assert palavras == [{"texto": "Olá", "inicio": 0.1, "fim": 0.4}]
+    assert dispositivos == [("medium", "cuda"), ("medium", "cpu")]

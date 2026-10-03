@@ -126,6 +126,22 @@ para o seu sistema, por exemplo:
 pip install torch --index-url https://download.pytorch.org/whl/cu126
 ```
 
+**Erro "no kernel image is available for execution on the device"?** O PyTorch instalado não tem
+suporte ao modelo da sua placa (comum em placas mais antigas, como a série GTX 10xx, com o PyTorch
+para CUDA 12.8). O app passa a usar a CPU sozinho e mostra o aviso no Estúdio. Para usar a placa,
+descubra o modelo e a "capacidade" dela:
+
+```bash
+python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
+```
+
+Se aparecer `(6, 1)`, `(6, 0)`, `(5, x)` ou `(7, 0)`, reinstale o PyTorch para **CUDA 12.6**:
+
+```bash
+python -m pip uninstall -y torch
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
 Com a GPU detectada, o Estúdio usa o modelo **medium** (ótimo em português). Sem GPU, usa o
 **small**. Dá para trocar em ⚙️ Configurações. Na primeira transcrição o Whisper baixa o modelo
 (~1,5 GB para o medium). Não é preciso instalar o FFmpeg: o app usa o que vem com o moviepy.
