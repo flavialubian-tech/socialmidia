@@ -44,8 +44,7 @@ if aviso := st.session_state.pop("_aviso_estudio", None):
 
 st.title("🎬 Estúdio de Produção")
 gpu = video.tem_gpu()
-st.caption(f"Whisper: modelo **{video.modelo_padrao()}** · "
-           f"{'🟢 GPU NVIDIA detectada' if gpu else '⚪ rodando na CPU (sem GPU NVIDIA/CUDA detectada)'} · "
+st.caption(f"Whisper: modelo **{video.modelo_padrao()}** · {video.texto_diagnostico_gpu()} · "
            "ajuste em ⚙️ Configurações")
 
 aba_video, aba_carrossel, aba_templates, aba_gerados = st.tabs(
