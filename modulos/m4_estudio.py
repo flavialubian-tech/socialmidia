@@ -131,9 +131,12 @@ with aba_video:
             st.markdown("**📝 Legendas**")
             usar_legendas = st.toggle("Mostrar legendas", value=cfg_salva.get("legendas", bool(palavras)),
                                       disabled=not palavras)
-            estilo = st.radio("Destaque da palavra falada", ["cor", "pilula"], horizontal=True,
-                              index=0 if cfg_salva.get("estilo_legenda", "cor") == "cor" else 1,
-                              format_func={"cor": "Cor", "pilula": "Pílula"}.get)
+            estilos = ["hormozi", "cor", "pilula"]
+            estilo = st.radio("Estilo da legenda", estilos, horizontal=True,
+                              index=estilos.index(cfg_salva.get("estilo_legenda", "hormozi"))
+                              if cfg_salva.get("estilo_legenda", "hormozi") in estilos else 0,
+                              format_func={"hormozi": "🔥 Hormozi", "cor": "Cor", "pilula": "Pílula"}.get,
+                              help="Hormozi: 1–2 palavras gigantes por vez, pop a cada palavra e cores alternando.")
             cor = st.color_picker("Cor de destaque",
                                   cfg_salva.get("cor_destaque", db.get_config("estudio_cor_destaque", "#FFD60A")))
             tamanho = st.slider("Tamanho", 5, 14, int(cfg_salva.get("tamanho_legenda", 0.095) * 100),
@@ -164,12 +167,48 @@ with aba_video:
             usar_gpu = st.checkbox("Exportar com a GPU (NVENC)", value=cfg_salva.get("usar_gpu", gpu),
                                    help="Mais rápido em placas NVIDIA. Se não funcionar, o app usa a CPU sozinho.")
 
+        # ---- Motion graphics ------------------------------------------------
+        st.markdown("**🎨 Motion graphics**")
+        mg1, mg2, mg3 = st.columns(3)
+        with mg1:
+            stickers = st.checkbox("Stickers flat 2D (✔ ✖ 💡 💰 ⏰ 📈 …)", value=cfg_salva.get("stickers", True),
+                                   help="Aparecem quando você fala palavras como erro, dica, dinheiro, tempo, resultado.")
+            destaques = st.checkbox("Tipografia cinética nos números", value=cfg_salva.get("destaques", True),
+                                    help="\"3 ERROS\", \"72 HORAS\", \"50%\" entram palavra por palavra.")
+            transicoes = st.selectbox("Transição nos cortes", ["alternado", "flash", "zoom", "glitch", "nenhuma"],
+                                      index=["alternado", "flash", "zoom", "glitch", "nenhuma"].index(
+                                          cfg_salva.get("transicoes", "alternado")),
+                                      format_func={"alternado": "Alternar (flash/zoom/glitch)", "flash": "Flash",
+                                                   "zoom": "Zoom com desfoque", "glitch": "Glitch",
+                                                   "nenhuma": "Nenhuma"}.get)
+        with mg2:
+            abertura = st.checkbox("Selo de abertura com seu @", value=cfg_salva.get("abertura", True))
+            nome_abertura = st.text_input("Seu @", cfg_salva.get("nome_abertura", db.get_config("estudio_arroba", "")),
+                                          placeholder="@seuperfil", disabled=not abertura)
+            cta = st.checkbox("CTA final animado (com toque no botão)", value=cfg_salva.get("cta", True))
+            ctas = ["salvar", "seguir", "comentar", "link"]
+            cta_tipo = st.selectbox("Chamada", ctas, index=ctas.index(cfg_salva.get("cta_tipo", "salvar")),
+                                    format_func={"salvar": "Salva esse vídeo", "seguir": "Segue pra mais dicas",
+                                                 "comentar": "Comenta aqui embaixo", "link": "Link na bio"}.get,
+                                    disabled=not cta)
+        with mg3:
+            sons = st.checkbox("Efeitos sonoros (whoosh, pop, clique, ding)", value=cfg_salva.get("sons", True))
+            volume_sons = st.slider("Volume dos efeitos", 0.1, 1.0, float(cfg_salva.get("volume_sons", 0.5)), 0.1,
+                                    disabled=not sons)
+            acabamento = st.checkbox("Acabamento de cinema (cor + vinheta)", value=cfg_salva.get("acabamento", True))
+            granulado = st.checkbox("Granulado de filme", value=cfg_salva.get("granulado", True),
+                                    disabled=not acabamento)
+        if nome_abertura.strip() and nome_abertura.strip() != db.get_config("estudio_arroba", ""):
+            db.set_config("estudio_arroba", nome_abertura.strip())
+
         config = video.ConfigEdicao(
             formato=formato, legendas=usar_legendas and bool(palavras), estilo_legenda=estilo, cor_destaque=cor,
             tamanho_legenda=tamanho / 100, posicao_legenda=posicao / 100, max_palavras=max_palavras, zooms=zooms,
             intensidade_zoom=intensidade, zoom_cortes=zoom_cortes, punch_enfase=punch, ken_burns=ken_burns,
             titulo=titulo.strip(), duracao_titulo=duracao_titulo, barra_progresso=barra_prog, usar_gpu=usar_gpu,
-            fonte=None,
+            fonte=None, stickers=stickers, destaques=destaques, abertura=abertura,
+            nome_abertura=nome_abertura.strip(), cta=cta, cta_tipo=cta_tipo, transicoes=transicoes, sons=sons,
+            volume_sons=volume_sons, acabamento=acabamento, granulado=granulado,
         )
         from services import fontes as fontes_srv
 
@@ -208,6 +247,7 @@ with aba_video:
             if info:
                 c2.caption(f"{info.get('largura')}×{info.get('altura')} · {seg(info.get('duracao', 0))} · "
                            f"{info.get('paginas_legenda', 0)} legendas · {info.get('zooms_enfase', 0)} punch-ins · "
+                           f"{info.get('stickers', 0)} stickers · {info.get('destaques', 0)} destaques · "
                            f"codec {info.get('codec')}")
         elif job["status"] == "erro":
             st.error(f"Último erro: {job['erro']}")
