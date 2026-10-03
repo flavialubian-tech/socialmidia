@@ -32,6 +32,8 @@ services/               # lógica sem Streamlit
   rastreador.py         # piloto automático: palavras-chave agendadas (APScheduler)
   maquina.py            # Termômetro de Validação, funil/formato e geração do roteiro
   cofre.py              # edição com registro no Dossiê e reciclagem de posts
+  dashboard.py          # indicadores, alta performance e "Reciclar este tema"
+  graficos.py           # gráficos do Dashboard (Plotly)
 worker.py               # roda o piloto automático com o app fechado
 tests/                  # testes automatizados (IA simulada, sem custo)
 data/                   # banco, uploads, templates e exportações (fora do git)
@@ -70,6 +72,18 @@ quentes de cada palavra, lê os comentários e envia **dores e tendências** par
 3. **Funil e Formato**: Topo, Meio ou Fundo; a IA sugere os 3 melhores formatos.
 4. **Roteiro**: gancho de 3s, roteiro técnico (Áudio x Tela) ou lâminas do carrossel, legenda,
    CTA e hashtags — tudo editável. **Salvar no Cofre** envia para "Roteiros Prontos" (Módulo 3).
+
+## Módulo 0 — Dashboard (Centro de Comando)
+
+- **Indicadores** do período: posts publicados, views, média por post, taxa de salvamento e de
+  compartilhamento — com filtro por persona e período.
+- **🔔 Métricas pendentes**: 7 e 14 dias após a postagem, o post aparece com um formulário para
+  lançar Views, Salvamentos, Compartilhamentos, Comentários e Curtidas.
+- **🔥 Alta performance**: posts acima das metas (padrão 10.000 views ou 500 salvamentos,
+  ajustáveis em ⚙️ Configurações) ou com 2x a mediana de views da persona ganham o botão
+  **♻️ Reciclar este tema**, que cria um Assunto Quente e abre a Máquina de Conteúdo com ele.
+- **📈 Gráficos**: top posts por views, taxa de salvamento por formato e views por data de
+  postagem (com tabela dos dados).
 
 ## Módulo 3 — Cofre de Ideias (Kanban)
 

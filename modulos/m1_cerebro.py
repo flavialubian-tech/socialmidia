@@ -20,7 +20,8 @@ ROTULOS_PLATAFORMA = {
 }
 ROTULOS_STATUS_ASSUNTO = {"novo": "🔥 Novo", "em_uso": "✍️ Em uso", "usado": "✅ Usado", "descartado": "🗑️ Descartado"}
 ROTULOS_STATUS_BUSCA = {"pendente": "⏳", "coletando": "📥", "analisando": "🧠", "concluido": "✅", "erro": "❌"}
-ROTULOS_TIPO_ASSUNTO = {"tendencia": "📈 Tendência", "dor": "😣 Dor", "manual": "✍️ Manual"}
+ROTULOS_TIPO_ASSUNTO = {"tendencia": "📈 Tendência", "dor": "😣 Dor", "manual": "✍️ Manual",
+                        "reciclagem": "♻️ Reciclar (alta performance)"}
 ROTULOS_STATUS_EXECUCAO = {"executando": "⏳ Rodando", "concluido": "✅ Concluído",
                            "sem_resultados": "🤷 Sem resultados", "erro": "❌ Erro"}
 ICONE_FREQUENCIA = {"alta": "🔴", "media": "🟠", "baixa": "🟡"}

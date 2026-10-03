@@ -8,7 +8,7 @@ from services import maquina, scraper
 from services.llm import LLMError, PROVEDORES, config_atual, obter_segredo
 
 ROTULOS_PLATAFORMA = {"tiktok": "🎵 TikTok", "instagram": "📸 Instagram", "youtube": "▶️ YouTube"}
-ROTULOS_TIPO = {"tendencia": "📈", "dor": "😣", "manual": "✍️"}
+ROTULOS_TIPO = {"tendencia": "📈", "dor": "😣", "manual": "✍️", "reciclagem": "♻️"}
 FONTE_ASSUNTO, FONTE_LIVRE = "🔥 Assunto Quente", "✍️ Tema livre"
 ESTADO_FLUXO = ("m2_validacao", "m2_validacao_pulada", "m2_formatos", "m2_conteudo")
 
@@ -71,8 +71,13 @@ def mostrar_validacao(v: dict, chave: str) -> None:
 # Pré-preenchimento vindo da aba "Validações recentes" (antes de criar widgets)
 # ---------------------------------------------------------------------------
 if pendente := st.session_state.pop("m2_pendente", None):
-    st.session_state["m2_fonte"] = FONTE_LIVRE
-    st.session_state["m2_tema_livre"] = pendente["tema"]
+    assunto_pendente = db.obter_assunto(pendente["assunto_id"]) if pendente.get("assunto_id") else None
+    if assunto_pendente and assunto_pendente["status"] in ("novo", "em_uso"):
+        st.session_state["m2_fonte"] = FONTE_ASSUNTO  # ex.: "Reciclar este tema" vindo do Dashboard
+        st.session_state["m2_assunto"] = assunto_pendente["id"]
+    else:
+        st.session_state["m2_fonte"] = FONTE_LIVRE
+        st.session_state["m2_tema_livre"] = pendente["tema"]
     st.session_state["m2_plataforma"] = pendente["plataforma"]
     persona_pendente = pendente["persona_id"] if db.obter_persona(pendente["persona_id"] or 0) else None
     st.session_state["m2_persona"] = persona_pendente

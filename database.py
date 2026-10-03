@@ -950,7 +950,7 @@ def listar_alertas_metricas(hoje: date | None = None) -> list[dict]:
     """Conteúdos 'postado' que já passaram de 7/14 dias sem métricas registradas."""
     hoje_str = (hoje or date.today()).isoformat()
     sql = """
-        SELECT c.id AS conteudo_id, c.titulo, c.data_postagem, p.nome AS persona,
+        SELECT c.id AS conteudo_id, c.titulo, c.data_postagem, c.persona_id, p.nome AS persona,
                m.marco AS marco_dias,
                CAST(julianday(?) - julianday(c.data_postagem) AS INTEGER) AS dias_desde_postagem
         FROM conteudos c
@@ -965,6 +965,59 @@ def listar_alertas_metricas(hoje: date | None = None) -> list[dict]:
     """
     with get_connection() as conn:
         return [dict(r) for r in conn.execute(sql, (hoje_str, hoje_str))]
+
+
+def salvar_metricas(conteudo_id: int, marco_dias: int, views: int = 0, saves: int = 0, shares: int = 0,
+                   comments: int = 0, likes: int = 0) -> None:
+    """Grava (ou corrige) as métricas de um marco (7 ou 14 dias) e registra no Dossiê."""
+    if marco_dias not in MARCOS_METRICAS:
+        raise ValueError("O marco deve ser 7 ou 14 dias.")
+    valores = [max(0, int(v or 0)) for v in (views, saves, shares, comments, likes)]
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO metricas (conteudo_id, marco_dias, views, saves, shares, comments, likes)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(conteudo_id, marco_dias) DO UPDATE SET
+                   views = excluded.views, saves = excluded.saves, shares = excluded.shares,
+                   comments = excluded.comments, likes = excluded.likes,
+                   registrado_em = datetime('now','localtime')""",
+            (conteudo_id, marco_dias, *valores),
+        )
+        conn.execute(
+            "INSERT INTO historico_conteudo (conteudo_id, evento, detalhes) VALUES (?, 'metricas', ?)",
+            (conteudo_id, f"Métricas de {marco_dias} dias: {valores[0]} views, {valores[1]} salvamentos, "
+                          f"{valores[2]} compartilhamentos, {valores[3]} comentários"),
+        )
+
+
+def dados_performance(persona_id: int | None = None, desde: str | None = None) -> list[dict]:
+    """Posts publicados com a métrica mais recente (14 dias, se houver; senão 7)."""
+    sql = """SELECT c.id, c.titulo, c.persona_id, p.nome AS persona, c.formato, c.funil, c.plataforma,
+                    c.data_postagem, c.assunto_id, c.extras,
+                    m.marco_dias, m.views, m.saves, m.shares, m.comments, m.likes
+             FROM conteudos c
+             LEFT JOIN personas p ON p.id = c.persona_id
+             LEFT JOIN metricas m ON m.id = (SELECT m2.id FROM metricas m2 WHERE m2.conteudo_id = c.id
+                                              ORDER BY m2.marco_dias DESC LIMIT 1)
+             WHERE c.status = 'postado' AND c.data_postagem IS NOT NULL"""
+    params: list[Any] = []
+    if persona_id:
+        sql += " AND c.persona_id = ?"
+        params.append(persona_id)
+    if desde:
+        sql += " AND c.data_postagem >= ?"
+        params.append(desde)
+    sql += " ORDER BY c.data_postagem"
+    with get_connection() as conn:
+        return [row_to_dict(r, ("extras",)) for r in conn.execute(sql, params)]
+
+
+def assunto_de_reciclagem(conteudo_id: int) -> dict | None:
+    """Assunto Quente já criado a partir deste post pelo botão 'Reciclar este tema'."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM assuntos_quentes WHERE conteudo_origem_id = ? AND origem = 'reciclagem' "
+                           "ORDER BY id DESC LIMIT 1", (conteudo_id,)).fetchone()
+    return row_to_dict(row)
 
 
 def contar_conteudos_por_status() -> dict[str, int]:

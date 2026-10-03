@@ -173,3 +173,47 @@ def test_kanban_abre_dossie():
     at.button(key=f"abrir_{cid}").click().run(timeout=30)
     assert not at.exception, at.exception
     assert any(t.value == "Gancho X" for t in at.text_area)
+
+
+# --- Módulo 0: Dashboard -----------------------------------------------------
+PAGINA_M0 = str(RAIZ / "modulos" / "m0_dashboard.py")
+
+
+def test_dashboard_registra_metricas_e_recicla(monkeypatch):
+    from datetime import date, timedelta
+
+    pid = db.criar_persona("Limpeza", "tiktok")
+    cid = db.criar_conteudo("Post campeão", persona_id=pid, plataforma="tiktok", extras={"tema": "Mancha no piso"})
+    db.mover_conteudo(cid, "postado", (date.today() - timedelta(days=8)).isoformat())
+
+    at = AppTest.from_file(PAGINA_M0).run(timeout=30)
+    assert not at.exception, at.exception
+    assert any("Métricas pendentes (1)" in s.value for s in at.subheader)
+
+    at.number_input(key=f"alerta_{cid}_7_views").set_value(40_000)
+    at.number_input(key=f"alerta_{cid}_7_saves").set_value(700)
+    next(b for b in at.button if "Salvar métricas" in b.label).click().run(timeout=30)
+    assert not at.exception, at.exception
+    assert db.listar_metricas(cid)[0]["views"] == 40_000
+    assert any("Métricas pendentes (0)" in s.value for s in at.subheader)
+    assert any("Alta performance (1)" in s.value for s in at.subheader)
+
+    at.button(key=f"reciclar_tema_{cid}").click().run(timeout=30)
+    assert not at.exception, at.exception
+    pendente = at.session_state["m2_pendente"]
+    assert pendente["tema"] == "Mancha no piso" and pendente["persona_id"] == pid
+    assert db.obter_assunto(pendente["assunto_id"])["origem"] == "reciclagem"
+
+
+def test_maquina_abre_com_assunto_de_reciclagem():
+    pid = db.criar_persona("Limpeza", "tiktok")
+    cid = db.criar_conteudo("Post", persona_id=pid, plataforma="tiktok", extras={"tema": "Mancha no piso"})
+    db.mover_conteudo(cid, "postado", "2026-09-01")
+    from services import dashboard
+
+    at = AppTest.from_file(PAGINA_M2)
+    at.session_state["m2_pendente"] = dashboard.enviar_para_reciclagem(cid)
+    at.run(timeout=30)
+    assert not at.exception, at.exception
+    assert at.radio(key="m2_fonte").value == "🔥 Assunto Quente"
+    assert at.selectbox(key="m2_assunto").value == db.assunto_de_reciclagem(cid)["id"]

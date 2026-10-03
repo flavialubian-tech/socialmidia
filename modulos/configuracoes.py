@@ -83,3 +83,17 @@ limite = st.number_input("Limite padrão de comentários por coleta", 50, 1000,
 if limite != int(db.get_config("radar_limite_comentarios", "300")):
     db.set_config("radar_limite_comentarios", int(limite))
     st.toast("Limite atualizado.")
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+st.subheader("📊 Metas de alta performance (Dashboard)")
+st.caption("Posts acima de qualquer uma destas metas ganham o botão ♻️ Reciclar este tema.")
+with st.form("form_metas"):
+    c1, c2 = st.columns(2)
+    meta_views = c1.number_input("Views", 0, 100_000_000, int(db.get_config("metricas_limiar_views", "10000")), 500)
+    meta_saves = c2.number_input("Salvamentos", 0, 10_000_000, int(db.get_config("metricas_limiar_saves", "500")), 50)
+    if st.form_submit_button("💾 Salvar metas"):
+        db.set_config("metricas_limiar_views", int(meta_views))
+        db.set_config("metricas_limiar_saves", int(meta_saves))
+        st.success("Metas salvas!")
