@@ -35,6 +35,7 @@ services/               # lógica sem Streamlit
   dashboard.py          # indicadores, alta performance e "Reciclar este tema"
   graficos.py           # gráficos do Dashboard (Plotly)
   video.py              # corte de silêncio, Whisper, legendas, zooms e motions
+  motion.py             # motion graphics: stickers, tipografia cinética, CTA, transições, sons
   carrossel.py          # lâminas PNG sobre os templates + .zip
   estudio.py            # trabalhos do Estúdio (pastas, etapas, histórico)
 assets/fontes/          # Source Sans Pro (licença SIL OFL) usada em legendas e carrosséis
@@ -115,6 +116,16 @@ quentes de cada palavra, lê os comentários e envia **dores e tendências** par
    - **Motions**: movimento suave de câmera (Ken Burns), título do gancho animado nos primeiros
      segundos e barra de progresso;
    - Formato original ou **vertical 9:16**; exportação pela GPU (NVENC) com volta automática à CPU.
+   - **🎨 Motion graphics** (tudo automático a partir da fala):
+     - **Legenda estilo Hormozi**: 1–2 palavras gigantes, pop a cada palavra, cores alternando;
+     - **Stickers flat 2D** (✔ ✖ ⚠ 💡 💰 ⏰ 📈 ❤ ⭐ 🔥 👇) quando você fala "erro", "dica",
+       "dinheiro", "tempo", "resultado"… — desenhados pelo app, iguais em qualquer computador;
+     - **Tipografia cinética** para números e frases de impacto ("3 ERROS", "72 HORAS");
+     - **Selo de abertura** com seu @ e **CTA final** animado com toque no botão
+       (Salvar / Seguir / Comentar / Link na bio);
+     - **Transições** nos cortes (flash, zoom com desfoque, glitch ou alternando);
+     - **Efeitos sonoros** sintetizados e sincronizados (whoosh, pop, clique, ding);
+     - **Acabamento de cinema**: contraste, saturação, vinheta e granulado.
    A **prévia de um quadro** mostra o resultado antes de renderizar o vídeo todo.
 
 #### Usando a placa NVIDIA (recomendado)

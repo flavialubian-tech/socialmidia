@@ -415,7 +415,7 @@ def fator_zoom(t: float, inicios: list[float], enfases: list[float], duracao: fl
 class ConfigEdicao:
     formato: str = "original"          # original | 9:16
     legendas: bool = True
-    estilo_legenda: str = "cor"        # cor | pilula
+    estilo_legenda: str = "cor"        # cor | pilula | hormozi
     cor_texto: str = "#FFFFFF"
     cor_destaque: str = "#FFD60A"
     tamanho_legenda: float = 0.095     # proporção da largura do vídeo
@@ -432,6 +432,18 @@ class ConfigEdicao:
     usar_gpu: bool = False
     fonte: str | None = None
     foco_vertical: float = 0.42        # onde costuma estar o rosto (0 = topo, 1 = base)
+    # --- motion graphics (services/motion.py) ---
+    stickers: bool = False             # ícones flat 2D ligados às palavras faladas
+    destaques: bool = False            # tipografia cinética para números/frases de impacto
+    abertura: bool = False             # selo animado com o @ no início
+    nome_abertura: str = ""
+    cta: bool = False                  # cartão final com microanimação de toque
+    cta_tipo: str = "salvar"           # salvar | seguir | comentar | link
+    transicoes: str = "nenhuma"        # nenhuma | flash | zoom | glitch | alternado
+    sons: bool = False                 # whoosh / pop / clique / ding sincronizados
+    volume_sons: float = 0.5
+    acabamento: bool = False           # cor de cinema + vinheta
+    granulado: bool = True             # grão de filme (quando há acabamento)
     extras: dict = field(default_factory=dict)
 
     def como_dict(self) -> dict:
@@ -459,11 +471,21 @@ class Renderizador:
         self.src_w, self.src_h = (fh * alvo, fh) if fw / fh > alvo else (fw, fw / alvo)
         self.inicios = inicios if (config.zooms or config.ken_burns) else []
         self.enfases = momentos_de_enfase(palavras) if config.zooms and config.punch_enfase else []
-        self.paginas = agrupar_legendas(palavras, config.max_palavras) if config.legendas else []
+        self.hormozi = config.estilo_legenda == "hormozi"
+        max_palavras = min(config.max_palavras, 2) if self.hormozi else config.max_palavras
+        self.paginas = agrupar_legendas(palavras, max_palavras, max_caracteres=16 if self.hormozi else 22) \
+            if config.legendas else []
         self.inicios_paginas = [p["inicio"] for p in self.paginas]
-        tamanho = max(24, int(self.W * config.tamanho_legenda))
+        tamanho = max(24, int(self.W * config.tamanho_legenda * (1.3 if self.hormozi else 1.0)))
         self._cache_legendas: dict[tuple[int, int], Image.Image] = {}
         self._tamanho_legenda = tamanho
+        from services import motion as motion_srv
+
+        self.eventos = motion_srv.detectar_eventos(
+            palavras, inicios, self.duracao, stickers=config.stickers, destaques=config.destaques,
+            transicoes=config.transicoes, abertura=config.abertura, cta=config.cta)
+        self.motion = motion_srv.Motion(self.W, self.H, self.eventos, config.cor_destaque, config.fonte,
+                                        config.nome_abertura, config.cta_tipo, config.acabamento, config.granulado)
         self.titulo_img = (desenhar_titulo(config.titulo, int(self.W * 0.80), max(22, int(self.W * 0.06)),
                                            config.fonte) if config.titulo.strip() else None)
 
@@ -472,9 +494,11 @@ class Renderizador:
         chave = (i_pagina, ativa)
         if chave not in self._cache_legendas:
             c = self.config
+            # Hormozi: a cor da palavra falada alterna entre o destaque e o verde a cada página
+            cor = (c.cor_destaque, "#22C55E")[i_pagina % 2] if self.hormozi else c.cor_destaque
             self._cache_legendas[chave] = desenhar_legenda(
-                [p["texto"] for p in self.paginas[i_pagina]["palavras"]], ativa, int(self.W * 0.84),
-                self._tamanho_legenda, c.cor_texto, c.cor_destaque, c.estilo_legenda, c.fonte)
+                [p["texto"] for p in self.paginas[i_pagina]["palavras"]], ativa, int(self.W * 0.88),
+                self._tamanho_legenda, c.cor_texto, cor, "cor" if self.hormozi else c.estilo_legenda, c.fonte)
         return self._cache_legendas[chave]
 
     @staticmethod
@@ -499,6 +523,10 @@ class Renderizador:
         ativa = max(0, bisect.bisect_right([p["inicio"] for p in pagina["palavras"]], t) - 1)
         p = progresso(t, pagina["inicio"], 0.22)
         escala = misturar(0.72, 1.0, ease_out_back(p))
+        if self.hormozi:  # "pop" a cada palavra falada, não só quando a página entra
+            pp = progresso(t, pagina["palavras"][ativa]["inicio"], 0.14)
+            escala = misturar(0.82, 1.0, ease_out_back(pp, 2.6))
+            p = max(p, 0.6)
         opacidade = ease_out_cubic(p)
         subida = misturar(self.H * 0.025, 0, ease_out_cubic(p))
         proxima = self.paginas[i + 1]["inicio"] if i + 1 < len(self.paginas) else None
@@ -529,7 +557,10 @@ class Renderizador:
 
     # --- quadro --------------------------------------------------------------
     def quadro(self, t: float) -> np.ndarray:
-        imagem = Image.fromarray(self.clip.get_frame(t))
+        quadro = self.clip.get_frame(t)
+        if quadro.dtype != np.uint8:  # alguns clipes devolvem inteiros de 64 bits
+            quadro = np.clip(quadro, 0, 255).astype(np.uint8)
+        imagem = Image.fromarray(quadro)
         z = fator_zoom(t, self.inicios, self.enfases, self.duracao, self.config.intensidade_zoom,
                        self.config.zooms and self.config.zoom_cortes, self.config.ken_burns,
                        self.config.zooms and self.config.punch_enfase)
@@ -542,12 +573,39 @@ class Renderizador:
         cx = min(max(cx, cw / 2), fw - cw / 2)
         imagem = imagem.crop((int(cx - cw / 2), int(cy - ch / 2), int(cx + cw / 2), int(cy + ch / 2)))
         imagem = imagem.resize((self.W, self.H), Image.BILINEAR)
+        imagem = self.motion.finalizar(imagem, t)  # cor de cinema só no vídeo, não nos textos
+        if self.motion.transicao_ativa(t):
+            imagem = Image.fromarray(self.motion.transicao(np.asarray(imagem), t))
         if self.paginas:
             self._desenhar_legenda(imagem, t)
         self._desenhar_titulo(imagem, t)
+        self.motion.sobrepor(imagem, t)
         if self.config.barra_progresso:
             self._desenhar_barra(imagem, t)
         return np.asarray(imagem)
+
+
+def _audio_com_sfx(entrada, clip, eventos, volume: float):
+    """Áudio original + efeitos sonoros, como um AudioArrayClip estéreo a 44,1 kHz."""
+    import subprocess
+
+    import imageio_ffmpeg
+    from moviepy import AudioArrayClip
+
+    from services import motion as motion_srv
+
+    sr = 44100
+    resultado = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-i", str(entrada), "-vn",
+                                "-ac", "2", "-ar", str(sr), "-f", "f32le", "-"], capture_output=True)
+    amostras = np.frombuffer(resultado.stdout, dtype=np.float32)
+    total = int(clip.duration * sr)
+    if amostras.size >= 2:
+        audio = amostras[: (amostras.size // 2) * 2].reshape(-1, 2)[:total]
+    else:
+        audio = np.zeros((total, 2), dtype=np.float32)
+    if len(audio) < total:
+        audio = np.vstack([audio, np.zeros((total - len(audio), 2), dtype=np.float32)])
+    return AudioArrayClip(motion_srv.mixar_sfx(audio, sr, eventos, volume), fps=sr)
 
 
 def renderizar(entrada: str | Path, saida: str | Path, palavras: list[dict], inicios: list[float],
@@ -558,11 +616,17 @@ def renderizar(entrada: str | Path, saida: str | Path, palavras: list[dict], ini
     try:
         r = Renderizador(clip, palavras, inicios, config)
         final = VideoClip(frame_function=r.quadro, duration=clip.duration)
-        if clip.audio is not None:
+        if config.sons and r.eventos:
+            final = final.with_audio(_audio_com_sfx(entrada, clip, r.eventos, config.volume_sons))
+        elif clip.audio is not None:
             final = final.with_audio(clip.audio)
         codec = exportar(final, saida, fps=clip.fps, usar_gpu=config.usar_gpu, progresso_cb=progresso_cb)
+        contagem = {tipo: sum(1 for e in r.eventos if e.tipo == tipo)
+                    for tipo in ("sticker", "destaque", "transicao")}
         return {"largura": r.W, "altura": r.H, "duracao": round(clip.duration, 2), "codec": codec,
-                "paginas_legenda": len(r.paginas), "zooms_enfase": len(r.enfases)}
+                "paginas_legenda": len(r.paginas), "zooms_enfase": len(r.enfases),
+                "stickers": contagem["sticker"], "destaques": contagem["destaque"],
+                "transicoes": contagem["transicao"]}
     finally:
         clip.close()
 
