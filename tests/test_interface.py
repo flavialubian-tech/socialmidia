@@ -41,13 +41,17 @@ def test_radar_manual_pela_tela(monkeypatch):
                         lambda **_: FakeListChatModel(responses=[json.dumps(RESPOSTA_IA)]))
     at = AppTest.from_file(PAGINA).run(timeout=30)
     at.radio(key="radar_metodo").set_value("✍️ Colar / enviar arquivo").run(timeout=30)
-    at.text_area(key="radar_texto").input("ana: não tenho tempo\nbia: quero rotina simples").run(timeout=30)
+    at.text_area(key="radar_texto").input("ana: não tenho tempo nenhum de manhã pra fazer skincare completo\n"
+                                            "bia: quero uma rotina simples que caiba antes do trabalho\n"
+                                            "cris: boa dica 😍").run(timeout=30)
+    assert any("3 comentários → 2 relevantes" in c.value for c in at.caption)
     botao = next(b for b in at.button if "Analisar" in b.label)
     assert not botao.disabled
     botao.click().run(timeout=30)
     assert not at.exception, at.exception
     assert len(db.listar_assuntos_quentes()) == 4  # 3 tendências + 1 dor
     assert any("Resumo da audiência" in m.value for m in at.info)
+    assert any("Comentários quentes" in m.label for m in at.metric)
 
 
 # --- Rastreador Automático ---------------------------------------------------

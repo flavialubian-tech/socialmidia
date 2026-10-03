@@ -19,9 +19,9 @@ RESPOSTA_IA = {
     ],
 }
 COMENTARIOS = [
-    {"autor": "ana", "texto": "não tenho 10 min de manhã", "curtidas": 50},
-    {"autor": "bia", "texto": "faz um vídeo de rotina simples!", "curtidas": 10},
-    {"autor": "bia", "texto": "faz um vídeo de rotina simples!", "curtidas": 1},
+    {"autor": "ana", "texto": "não tenho nem 10 minutos de manhã pra cuidar da pele, socorro", "curtidas": 50},
+    {"autor": "bia", "texto": "faz um vídeo de rotina simples pra quem trabalha fora o dia todo!", "curtidas": 10},
+    {"autor": "bia", "texto": "faz um vídeo de rotina simples pra quem trabalha fora o dia todo!", "curtidas": 1},
 ]
 
 
@@ -110,7 +110,7 @@ def test_coleta_sem_token_da_erro_amigavel():
 # --- Radar -----------------------------------------------------------------
 def test_preparar_comentarios_ordena_e_deduplica():
     texto = radar.preparar_comentarios(COMENTARIOS)
-    assert texto.splitlines() == ["[50] não tenho 10 min de manhã", "[10] faz um vídeo de rotina simples!"]
+    assert texto.splitlines() == ["[50] " + COMENTARIOS[0]["texto"], "[10] " + COMENTARIOS[1]["texto"]]
 
 
 def test_normalizar_analise_filtra_proibidas_e_limita():
@@ -124,7 +124,8 @@ def test_executar_radar_manual_completo():
     pid = db.criar_persona("Skin", "tiktok", palavras_proibidas=["barato"])
     resultado = radar.executar_radar("", comentarios=COMENTARIOS, persona_id=pid,
                                      llm=llm_falso(json.dumps(RESPOSTA_IA)))
-    assert resultado.total_comentarios == 3
+    assert resultado.total_comentarios == 2  # o repetido é descartado pelo filtro
+    assert resultado.filtro["repetidos"] == 1 and resultado.filtro["coletados"] == 3
     assert len(resultado.assuntos_criados) == 3  # 2 tendências + 1 dor de frequência alta
     assert {a["tipo"] for a in db.listar_assuntos_quentes(pid)} == {"tendencia", "dor"}
     busca = db.listar_buscas()[0]

@@ -67,6 +67,7 @@ def criar_llm(config: ConfigLLM | None = None, json_mode: bool = False) -> BaseC
             temperature=config.temperatura,
             base_url=obter_segredo("OLLAMA_BASE_URL") or "http://localhost:11434",
             format="json" if json_mode else None,
+            num_ctx=8192,  # janela maior que o padrão do Ollama, para caber o lote de comentários
         )
 
     chave = obter_segredo(CHAVES_API.get(config.provedor, ""))
@@ -113,6 +114,26 @@ def extrair_json(texto: str) -> dict:
         raise LLMError(f"A IA retornou um JSON malformado: {exc}") from exc
 
 
+def traduzir_erro(exc: Exception) -> str:
+    """Transforma erros técnicos dos provedores em mensagens que dizem o que fazer."""
+    texto = str(exc)
+    baixo = texto.lower()
+    if "llama-server" in baixo or ("status code: 500" in baixo and "ollama" in type(exc).__module__.lower()) \
+            or "llama runner" in baixo:
+        return ("O Ollama travou no meio da análise — quase sempre é falta de memória do computador para o modelo. "
+                "Tente: (1) em ⚙️ Configurações, usar um modelo menor no Ollama, como \"llama3.2:3b\" "
+                "(rode antes `ollama pull llama3.2:3b`); ou (2) trocar o provedor para o Claude. "
+                f"Detalhe técnico: {texto[:200]}")
+    if "connection refused" in baixo or "failed to connect" in baixo or "connecterror" in baixo:
+        return ("Não consegui falar com a IA. Se estiver usando o Ollama, confira se ele está aberto "
+                "(ícone da lhama perto do relógio). Detalhe: " + texto[:200])
+    if "401" in baixo or "authentication" in baixo or "invalid x-api-key" in baixo or "incorrect api key" in baixo:
+        return "A chave de API foi recusada. Confira a chave em ⚙️ Configurações."
+    if "credit balance" in baixo or "insufficient_quota" in baixo or "billing" in baixo:
+        return "A conta da IA está sem créditos. Adicione créditos no site do provedor (Billing)."
+    return f"Falha ao chamar a IA: {texto}"
+
+
 def gerar_texto(prompt: str, sistema: str = "", llm: BaseChatModel | None = None) -> str:
     llm = llm or criar_llm()
     mensagens = ([SystemMessage(sistema)] if sistema else []) + [HumanMessage(prompt)]
@@ -121,7 +142,7 @@ def gerar_texto(prompt: str, sistema: str = "", llm: BaseChatModel | None = None
     except LLMError:
         raise
     except Exception as exc:  # erros de rede/credencial do provedor
-        raise LLMError(f"Falha ao chamar a IA: {exc}") from exc
+        raise LLMError(traduzir_erro(exc)) from exc
 
 
 def gerar_json(prompt: str, sistema: str = "", llm: BaseChatModel | None = None, tentativas: int = 2) -> dict:

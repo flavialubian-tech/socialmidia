@@ -10,7 +10,7 @@ from modulos.comum import obter_agendador
 from services import rastreador as rastreador_srv
 from services import scraper
 from services.llm import LLMError, PROVEDORES, config_atual, obter_segredo
-from services.radar import executar_radar
+from services.radar import executar_radar, filtrar_comentarios, resumo_filtro
 
 ROTULOS_PLATAFORMA = {
     "instagram": "📸 Instagram",
@@ -20,7 +20,8 @@ ROTULOS_PLATAFORMA = {
 }
 ROTULOS_STATUS_ASSUNTO = {"novo": "🔥 Novo", "em_uso": "✍️ Em uso", "usado": "✅ Usado", "descartado": "🗑️ Descartado"}
 ROTULOS_STATUS_BUSCA = {"pendente": "⏳", "coletando": "📥", "analisando": "🧠", "concluido": "✅", "erro": "❌"}
-ROTULOS_TIPO_ASSUNTO = {"tendencia": "📈 Tendência", "dor": "😣 Dor", "manual": "✍️ Manual",
+ROTULOS_TIPO_ASSUNTO = {"tendencia": "📈 Tendência", "dor": "😣 Dor", "comentario": "💬 Comentário quente",
+                        "manual": "✍️ Manual",
                         "reciclagem": "♻️ Reciclar (alta performance)"}
 ROTULOS_STATUS_EXECUCAO = {"executando": "⏳ Rodando", "concluido": "✅ Concluído",
                            "sem_resultados": "🤷 Sem resultados", "erro": "❌ Erro"}
@@ -132,10 +133,27 @@ def mostrar_analise(analise: dict) -> None:
     if analise.get("resumo"):
         st.info(f"**Resumo da audiência:** {analise['resumo']}")
 
-    c1, c2, c3 = st.columns(3)
+    quentes = analise.get("comentarios_quentes") or []
+    if analise.get("filtro"):
+        st.caption(f"🧹 {resumo_filtro(analise['filtro'])}")
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Dores encontradas", len(analise["dores"]))
     c2.metric("Termos no dicionário", len(analise["dicionario"]))
     c3.metric("Assuntos quentes", len(analise["tendencias"]))
+    c4.metric("Comentários quentes", len(quentes))
+
+    if quentes:
+        st.markdown("#### 💬 Comentários quentes (viram vídeo)")
+        st.caption("Comentários que sozinhos já são um bom tema de gravação. Os de potencial ≥ 60% foram "
+                   "enviados para 🔥 Assuntos Quentes.")
+        for q in quentes:
+            with st.container(border=True):
+                st.markdown(f"> “{q['comentario']}”")
+                st.progress(q["potencial"] / 100, text=f"Potencial de conteúdo {q['potencial']}%")
+                if q.get("ideia"):
+                    st.markdown(f"🎬 **Ideia de vídeo:** {q['ideia']}")
+                if q.get("por_que"):
+                    st.caption(f"Por que é quente: {q['por_que']}")
 
     st.markdown("#### 😣 Dores principais")
     for d in analise["dores"]:
@@ -168,6 +186,12 @@ with aba_radar:
                       horizontal=True, key="radar_metodo")
     automatico = metodo.startswith("🤖")
 
+    min_palavras = st.slider(
+        "Filtro: mínimo de palavras por comentário", 1, 20, int(db.get_config("radar_min_palavras", "8")),
+        key="radar_min_palavras",
+        help="Comentários menores que isso, só com emojis, genéricos ('boa dica', 'bom dia', 'seguindo') "
+             "ou repetidos são descartados antes da IA ler.")
+
     comentarios_manuais: list[dict] | None = None
     if automatico:
         url = st.text_input("URL do post (TikTok, Instagram ou YouTube)",
@@ -180,6 +204,9 @@ with aba_radar:
             st.warning("Rede não reconhecida. Use um link do TikTok, Instagram ou YouTube.")
         if not obter_segredo("APIFY_API_TOKEN"):
             st.warning("Token da Apify não configurado. Cadastre em ⚙️ Configurações ou use a opção de colar comentários.")
+        st.caption("💳 A Apify cobra por comentário **baixado**, e o filtro só roda depois do download. "
+                   "Para gastar menos créditos, diminua o máximo de comentários acima: o filtro garante que a IA "
+                   "leia só os que importam.")
     else:
         url = st.text_input("URL de referência (opcional)", key="radar_url_manual")
         limite = 0
@@ -191,7 +218,10 @@ with aba_radar:
             if arquivo is not None:
                 comentarios_manuais += scraper.parse_arquivo(arquivo.name, arquivo.getvalue())
             if comentarios_manuais:
-                st.caption(f"📝 {len(comentarios_manuais)} comentários prontos para análise.")
+                relevantes, stats = filtrar_comentarios(comentarios_manuais, min_palavras)
+                st.caption(f"📝 {resumo_filtro(stats)}")
+                if not relevantes:
+                    st.warning("Nenhum comentário passou no filtro. Diminua o mínimo de palavras.")
         except scraper.ColetaError as exc:
             st.error(str(exc))
             comentarios_manuais = []
@@ -205,6 +235,7 @@ with aba_radar:
                     comentarios=None if automatico else comentarios_manuais,
                     persona_id=persona_radar,
                     limite=limite or 300,
+                    min_palavras=min_palavras,
                     progresso=lambda msg: status.update(label=msg) or st.write(msg),
                 )
                 status.update(label="Análise concluída!", state="complete", expanded=False)
@@ -292,7 +323,8 @@ with aba_historico:
             "Data": b["criado_em"][:16],
             "Persona": b["persona"] or "—",
             "Rede": b["plataforma"],
-            "Comentários": b["total_comentarios"],
+            "Coletados": b["total_coletados"] or b["total_comentarios"],
+            "Relevantes": b["total_comentarios"],
             "Método": b["metodo_coleta"],
             "URL": b["url"],
         } for b in buscas])
@@ -369,7 +401,9 @@ with aba_rastreador:
     ativos = [r for r in rastreadores if r["ativo"]]
 
     st.caption("Cadastre palavras-chave e o app, sozinho, encontra os vídeos mais quentes, lê os comentários "
-               "e envia as dores e tendências para 🔥 Assuntos Quentes.")
+               "e envia as dores, tendências e comentários quentes para 🔥 Assuntos Quentes. Comentários "
+               f"com menos de {db.get_config('radar_min_palavras', '8')} palavras, só emojis ou genéricos são "
+               "ignorados (ajuste em ⚙️ Configurações).")
     if not obter_segredo("APIFY_API_TOKEN"):
         st.warning("O Rastreador usa a Apify. Cadastre o token em ⚙️ Configurações para ele funcionar.")
 

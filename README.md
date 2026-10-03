@@ -51,8 +51,25 @@ data/                   # banco, uploads, templates e exportações (fora do git
 2. **👤 Personas**: cadastre cada perfil (público-alvo, tom de voz, palavras proibidas).
 3. **📡 Radar de Audiência**: cole a URL de um post (coleta automática pela Apify, requer
    `APIFY_API_TOKEN`) ou cole/envie os comentários manualmente.
-4. A IA gera **Dores**, **Dicionário do público** e **Alertas de Tendência**, que viram
-   **🔥 Assuntos Quentes** e alimentam o Módulo 2.
+4. A IA gera **Dores**, **Dicionário do público**, **Alertas de Tendência** e **💬 Comentários quentes**
+   (comentários que sozinhos já rendem um vídeo, com ideia de gravação e potencial). Tudo isso vira
+   **🔥 Assuntos Quentes** e alimenta o Módulo 2.
+
+### 🧹 Filtro de comentários relevantes
+
+Antes da IA ler, o Radar (e o Rastreador) descarta comentários com menos de **8 palavras** (ajustável
+no Radar e em ⚙️ Configurações), só com emojis, genéricos ("boa dica", "bom dia", "seguindo") e repetidos.
+O resultado mostra quantos foram coletados e quantos eram relevantes.
+
+> 💳 A Apify cobra por comentário **baixado** — o filtro roda depois do download. Para economizar
+> créditos, diminua o "Máximo de comentários" da coleta.
+
+**Todos os comentários relevantes são lidos**: quando são muitos, a IA analisa em lotes e depois junta
+tudo em um resultado só (no Ollama os lotes são menores para não estourar a memória).
+
+> ⚠️ **Erro "llama-server ... status code: 500" no Ollama**: o modelo travou por falta de memória.
+> Use um modelo menor (`ollama pull llama3.2:3b` e coloque `llama3.2:3b` em ⚙️ Configurações) ou troque
+> o provedor para o Claude.
 
 ### 🤖 Rastreador Automático (piloto automático)
 

@@ -8,7 +8,7 @@ from services import maquina, scraper
 from services.llm import LLMError, PROVEDORES, config_atual, obter_segredo
 
 ROTULOS_PLATAFORMA = {"tiktok": "🎵 TikTok", "instagram": "📸 Instagram", "youtube": "▶️ YouTube"}
-ROTULOS_TIPO = {"tendencia": "📈", "dor": "😣", "manual": "✍️", "reciclagem": "♻️"}
+ROTULOS_TIPO = {"tendencia": "📈", "dor": "😣", "comentario": "💬", "manual": "✍️", "reciclagem": "♻️"}
 FONTE_ASSUNTO, FONTE_LIVRE = "🔥 Assunto Quente", "✍️ Tema livre"
 ESTADO_FLUXO = ("m2_validacao", "m2_validacao_pulada", "m2_formatos", "m2_conteudo")
 
