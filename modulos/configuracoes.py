@@ -83,6 +83,13 @@ limite = st.number_input("Limite padrão de comentários por coleta", 50, 1000,
 if limite != int(db.get_config("radar_limite_comentarios", "300")):
     db.set_config("radar_limite_comentarios", int(limite))
     st.toast("Limite atualizado.")
+minimo = st.number_input("Mínimo de palavras para um comentário ser analisado", 1, 30,
+                         int(db.get_config("radar_min_palavras", "8")),
+                         help="Vale para o Radar e para o Rastreador. Comentários só com emoji, genéricos "
+                              "('boa dica', 'bom dia') e repetidos sempre são descartados.")
+if minimo != int(db.get_config("radar_min_palavras", "8")):
+    db.set_config("radar_min_palavras", int(minimo))
+    st.toast("Filtro atualizado.")
 
 # ---------------------------------------------------------------------------
 # Dashboard

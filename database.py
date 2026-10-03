@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("SOCIALMIDIA_DB_PATH", BASE_DIR / "data" / "socialmidia.db"))
 
 # Incrementar sempre que uma migração for adicionada em MIGRATIONS.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Valores controlados (espelhados nos CHECKs do schema)
 PLATAFORMAS = ("instagram", "tiktok", "youtube", "multiplataforma")
@@ -315,6 +315,14 @@ ALTER TABLE jobs_midia ADD COLUMN dados TEXT NOT NULL DEFAULT '{}';             
 ALTER TABLE jobs_midia ADD COLUMN atualizado_em TEXT;
 """
 
+SCHEMA_V4 = """
+-- Radar: quantos comentários vieram e quantos foram descartados pelo filtro de relevância
+ALTER TABLE radar_buscas ADD COLUMN total_coletados INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE radar_buscas ADD COLUMN filtro TEXT NOT NULL DEFAULT '{}';
+-- Comentários quentes: comentários que valem um vídeo inteiro
+ALTER TABLE analises_audiencia ADD COLUMN comentarios_quentes TEXT NOT NULL DEFAULT '[]';
+"""
+
 CONFIGURACOES_PADRAO = {
     "llm_provedor": "ollama",          # ollama | openai | anthropic
     "llm_modelo_ollama": "llama3.1",
@@ -322,6 +330,7 @@ CONFIGURACOES_PADRAO = {
     "llm_modelo_anthropic": "claude-sonnet-5-5",
     "llm_temperatura": "0.7",
     "radar_limite_comentarios": "300",
+    "radar_min_palavras": "8",          # comentários com menos palavras são descartados
     "rastreador_agendamento_ativo": "1",
     "rastreador_dia_semana": "fri",
     "rastreador_hora": "08:00",
@@ -339,6 +348,7 @@ MIGRATIONS: dict[int, str] = {
     1: SCHEMA_V1,
     2: SCHEMA_V2,
     3: SCHEMA_V3,
+    4: SCHEMA_V4,
 }
 
 
@@ -488,7 +498,7 @@ def excluir_persona(persona_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Radar de Audiência (Módulo 1)
 # ---------------------------------------------------------------------------
-_ANALISE_JSON = ("dores", "dicionario", "tendencias")
+_ANALISE_JSON = ("dores", "dicionario", "tendencias", "comentarios_quentes", "filtro")
 
 
 def criar_busca(url: str, plataforma: str, metodo_coleta: str, persona_id: int | None = None,
@@ -503,8 +513,10 @@ def criar_busca(url: str, plataforma: str, metodo_coleta: str, persona_id: int |
 
 
 def atualizar_busca(busca_id: int, **campos: Any) -> None:
-    permitidos = {"status", "total_comentarios", "erro", "plataforma", "metodo_coleta"}
+    permitidos = {"status", "total_comentarios", "erro", "plataforma", "metodo_coleta", "total_coletados", "filtro"}
     campos = {k: v for k, v in campos.items() if k in permitidos}
+    if "filtro" in campos:
+        campos["filtro"] = to_json(campos["filtro"])
     if not campos:
         return
     sets = ", ".join(f"{k} = ?" for k in campos)
@@ -562,10 +574,11 @@ def salvar_analise(busca_id: int, persona_id: int | None, analise: dict, modelo_
     with get_connection() as conn:
         cur = conn.execute(
             """INSERT INTO analises_audiencia (busca_id, persona_id, dores, dicionario, tendencias,
-                                               resumo, modelo_llm)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                               comentarios_quentes, resumo, modelo_llm)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (busca_id, persona_id, to_json(analise.get("dores")), to_json(analise.get("dicionario")),
-             to_json(analise.get("tendencias")), analise.get("resumo", ""), modelo_llm),
+             to_json(analise.get("tendencias")), to_json(analise.get("comentarios_quentes") or []),
+             analise.get("resumo", ""), modelo_llm),
         )
         return cur.lastrowid
 
@@ -580,7 +593,7 @@ def analise_da_busca(busca_id: int) -> dict | None:
 def obter_analise(analise_id: int) -> dict | None:
     with get_connection() as conn:
         row = conn.execute(
-            """SELECT a.*, b.url, b.plataforma, b.total_comentarios, p.nome AS persona
+            """SELECT a.*, b.url, b.plataforma, b.total_comentarios, b.total_coletados, b.filtro, p.nome AS persona
                FROM analises_audiencia a
                JOIN radar_buscas b ON b.id = a.busca_id
                LEFT JOIN personas p ON p.id = a.persona_id

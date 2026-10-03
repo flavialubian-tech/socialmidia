@@ -20,6 +20,7 @@ from typing import Callable
 import database as db
 from services import scraper
 from services.radar import executar_radar
+from services.scraper import ColetaError
 
 log = logging.getLogger("rastreador")
 
@@ -112,16 +113,20 @@ def executar_rastreador(
                                   erro="Os vídeos encontrados não tinham comentários acessíveis.")
             return {"status": "sem_resultados", "videos": videos}
 
-        resultado = executar_radar(
-            f"busca: {r['palavra_chave']}",
-            comentarios=comentarios,
-            persona_id=r["persona_id"],
-            llm=llm,
-            metodo="rastreador",
-            plataforma=r["plataforma"],
-            palavra_chave=r["palavra_chave"],
-            rastreador_id=rastreador_id,
-        )
+        try:
+            resultado = executar_radar(
+                f"busca: {r['palavra_chave']}",
+                comentarios=comentarios,
+                persona_id=r["persona_id"],
+                llm=llm,
+                metodo="rastreador",
+                plataforma=r["plataforma"],
+                palavra_chave=r["palavra_chave"],
+                rastreador_id=rastreador_id,
+            )
+        except ColetaError as exc:  # todos os comentários eram "boa dica", emojis etc.
+            db.finalizar_execucao(execucao_id, "sem_resultados", videos=videos, erro=str(exc))
+            return {"status": "sem_resultados", "videos": videos}
         db.finalizar_execucao(execucao_id, "concluido", busca_id=resultado.busca_id, videos=videos,
                               total_comentarios=resultado.total_comentarios,
                               assuntos_criados=len(resultado.assuntos_criados))
