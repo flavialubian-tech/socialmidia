@@ -28,5 +28,6 @@ APScheduler>=3.10,<4       # Rastreador Automático (buscas agendadas em segundo
 Pillow>=10.4
 moviepy>=2.1
 numpy>=1.26
-# Whisper instala o PyTorch (~2 GB). Também exige o FFmpeg instalado no sistema.
+# Whisper instala o PyTorch (~2 GB). Para usar a placa NVIDIA, reinstale o PyTorch com CUDA (veja o README).
+# Não é preciso instalar o FFmpeg: o app usa o que vem com o moviepy (imageio-ffmpeg).
 openai-whisper>=20240930
