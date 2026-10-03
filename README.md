@@ -13,6 +13,19 @@ streamlit run app.py
 
 O banco é criado automaticamente em `data/socialmidia.db`.
 
+### 🖱️ Abrir com dois cliques (Windows)
+
+1. Na pasta do projeto, dê dois cliques em **`Criar atalho na Area de Trabalho.bat`** (só uma vez).
+2. Pronto: use o ícone **Social Mídia** da Área de Trabalho. Ele abre o app no navegador sozinho.
+   - Uma janelinha preta fica minimizada na barra de tarefas: **fechar ela desliga o app**.
+   - Se o app já estiver aberto, o ícone só abre o navegador de novo.
+   - Na primeira vez, se faltar algum componente, ele instala sozinho.
+3. Depois de um merge no GitHub, dê dois cliques em **`Atualizar Social Midia.bat`** (faz o
+   `git pull` e atualiza os componentes). Depois feche o app e abra de novo.
+
+> Por que não um `.exe`? Com Whisper/PyTorch ele teria vários GB e precisaria ser refeito a cada
+> atualização. O atalho dá a mesma experiência de dois cliques e sempre usa a versão mais nova.
+
 ## Estrutura
 
 ```
