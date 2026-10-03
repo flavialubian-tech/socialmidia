@@ -182,5 +182,11 @@ def test_agendador_executa_em_segundo_plano(monkeypatch):
         rastreador.executar_em_segundo_plano(agendador, 42)
         assert feito.wait(timeout=10)
         assert recebidos == [(42, "manual")]
+        # espera o agendador descartar a tarefa avulsa antes de desligar (evita corrida no shutdown)
+        import time
+
+        limite = time.time() + 5
+        while len(agendador.get_jobs()) > 1 and time.time() < limite:
+            time.sleep(0.05)
     finally:
         agendador.shutdown(wait=True)

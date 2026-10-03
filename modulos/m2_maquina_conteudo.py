@@ -78,7 +78,9 @@ if pendente := st.session_state.pop("m2_pendente", None):
     st.session_state["m2_persona"] = persona_pendente
     st.session_state["m2_assinatura"] = (pendente["tema"], pendente["plataforma"], persona_pendente)
     limpar_fluxo()
-    st.session_state["m2_validacao"] = db.obter_validacao(pendente["validacao_id"])
+    if pendente.get("validacao_id"):
+        st.session_state["m2_validacao"] = db.obter_validacao(pendente["validacao_id"])
+    st.session_state["m2_conteudo_id"] = pendente.get("conteudo_id")  # ideia vinda do Cofre
     st.session_state["m2_aba"] = "🏭 Criar conteúdo"
 
 if aviso := st.session_state.pop("m2_aviso", None):
@@ -152,7 +154,13 @@ with aba_criar:
     assinatura = (tema, plataforma, persona_id)
     if st.session_state.get("m2_assinatura") != assinatura:
         st.session_state["m2_assinatura"] = assinatura
+        st.session_state.pop("m2_conteudo_id", None)
         limpar_fluxo()
+
+    conteudo_cofre_id = st.session_state.get("m2_conteudo_id")
+    if conteudo_cofre_id:
+        st.info(f"🗄️ Roteirizando a ideia #{conteudo_cofre_id} do Cofre. Ao salvar, o próprio card vai para "
+                "'Roteiros Prontos'.")
 
     if not tema:
         st.stop()
@@ -302,10 +310,12 @@ with aba_criar:
                 "hashtags": maquina.normalizar_hashtags(hashtags),
             }
             cid = maquina.salvar_no_cofre(final, tema, funil, conteudo["formato"], plataforma, persona_id,
-                                          assunto_id, validacao)
+                                          assunto_id, validacao, conteudo_id=conteudo_cofre_id)
             limpar_fluxo()
+            st.session_state.pop("m2_conteudo_id", None)
             st.session_state["m2_aviso"] = (f"Conteúdo #{cid} salvo em 'Roteiros Prontos' no Cofre de Ideias!", "💾")
             st.rerun()
         if c2.button("🧹 Começar do zero"):
             limpar_fluxo()
+            st.session_state.pop("m2_conteudo_id", None)
             st.rerun()

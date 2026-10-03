@@ -193,8 +193,8 @@ def iniciar_agendador():
 
 def executar_em_segundo_plano(agendador, rastreador_id: int | None = None) -> None:
     """Dispara uma execução manual sem travar a interface."""
+    # Sem id fixo: a proteção contra execução dupla fica no banco (iniciar_execucao).
     if rastreador_id is None:
-        agendador.add_job(executar_todos_agora, id="manual_todos", replace_existing=True)
+        agendador.add_job(executar_todos_agora)
     else:
-        agendador.add_job(executar_rastreador, args=[rastreador_id, "manual"], id=f"manual_{rastreador_id}",
-                          replace_existing=True)
+        agendador.add_job(executar_rastreador, args=[rastreador_id, "manual"])

@@ -31,6 +31,7 @@ services/               # lógica sem Streamlit
   radar.py              # comentários -> IA -> Dores, Dicionário e Assuntos Quentes
   rastreador.py         # piloto automático: palavras-chave agendadas (APScheduler)
   maquina.py            # Termômetro de Validação, funil/formato e geração do roteiro
+  cofre.py              # edição com registro no Dossiê e reciclagem de posts
 worker.py               # roda o piloto automático com o app fechado
 tests/                  # testes automatizados (IA simulada, sem custo)
 data/                   # banco, uploads, templates e exportações (fora do git)
@@ -69,6 +70,18 @@ quentes de cada palavra, lê os comentários e envia **dores e tendências** par
 3. **Funil e Formato**: Topo, Meio ou Fundo; a IA sugere os 3 melhores formatos.
 4. **Roteiro**: gancho de 3s, roteiro técnico (Áudio x Tela) ou lâminas do carrossel, legenda,
    CTA e hashtags — tudo editável. **Salvar no Cofre** envia para "Roteiros Prontos" (Módulo 3).
+
+## Módulo 3 — Cofre de Ideias (Kanban)
+
+- Colunas: **💡 Ideias no Radar → 📝 Roteiros Prontos → 🎬 Em Edição → ✅ Postado**. Use ◀ ▶ nos cards.
+- Ao mover para **Postado**, informe a data (e o link): o Dashboard pede as métricas 7 e 14 dias depois.
+- Filtros por persona, plataforma, funil e busca por texto.
+- **💡 Nova ideia** cria um card simples; o botão **⚙️** leva a ideia para a Máquina de Conteúdo e,
+  ao salvar o roteiro lá, o próprio card avança para "Roteiros Prontos" (sem duplicar).
+- **📂 Dossiê**: roteiro editável, referências (Assunto Quente, validação, lacuna, links), linha do
+  tempo de tudo o que aconteceu com o card e métricas.
+- **♻️ Reciclar** (cards postados): a IA reescreve o conteúdo em outro formato, usando o original e
+  as métricas dele; a nova versão vira um card em "Roteiros Prontos", ligada ao post de origem.
 
 > Os nomes e formatos dos coletores da Apify ficam em `services/scraper.py`
 > (`ATORES_APIFY`, `ATORES_BUSCA_APIFY`, `_input_apify`, `_input_busca`).

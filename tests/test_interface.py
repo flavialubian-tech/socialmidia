@@ -127,3 +127,49 @@ def test_maquina_pular_validacao_e_aba_historico():
     assert not at.exception, at.exception
     assert any(b.label.startswith("✨ Gerar roteiro") for b in at.button)
     assert any("Nenhuma validação ainda" in i.value for i in at.info)
+
+
+# --- Módulo 3: Kanban --------------------------------------------------------
+PAGINA_M3 = str(RAIZ / "modulos" / "m3_cofre_ideias.py")
+
+
+def test_kanban_mostra_colunas_e_move_cards():
+    pid = db.criar_persona("Limpeza", "tiktok")
+    ideia = db.criar_ideia("Minha ideia", pid, "tiktok")
+    pronto = db.criar_conteudo("Roteiro A", persona_id=pid, plataforma="tiktok", formato="Vídeo POV")
+    postado = db.criar_conteudo("Post antigo", persona_id=pid, plataforma="tiktok")
+    db.mover_conteudo(postado, "postado", "2026-09-01")
+
+    at = AppTest.from_file(PAGINA_M3).run(timeout=30)
+    assert not at.exception, at.exception
+    titulos = [m.value for m in at.markdown]
+    assert any("Ideias no Radar" in t and "`1`" in t for t in titulos)
+    assert any("Postado" in t and "`1`" in t for t in titulos)
+    assert any("métricas pendentes" in c.value for c in at.caption)
+
+    at.button(key=f"avancar_{pronto}").click().run(timeout=30)
+    assert db.obter_conteudo(pronto)["status"] == "em_edicao"
+    at.button(key=f"voltar_{pronto}").click().run(timeout=30)
+    assert db.obter_conteudo(pronto)["status"] == "roteiro_pronto"
+
+    at.selectbox(key="m3_plataforma").set_value("instagram").run(timeout=30)
+    assert any("Nada por aqui" in c.value for c in at.caption)
+    assert ideia
+
+
+def test_kanban_ideia_vai_para_maquina():
+    ideia = db.criar_ideia("Ideia para roteirizar", plataforma="youtube")
+    at = AppTest.from_file(PAGINA_M3).run(timeout=30)
+    at.button(key=f"maquina_{ideia}").click().run(timeout=30)
+    assert not at.exception, at.exception
+    pendente = at.session_state["m2_pendente"]
+    assert pendente["conteudo_id"] == ideia and pendente["plataforma"] == "youtube"
+    assert pendente["tema"] == "Ideia para roteirizar"
+
+
+def test_kanban_abre_dossie():
+    cid = db.criar_conteudo("Com dossiê", gancho="Gancho X", roteiro=[{"tempo": "0-3s", "audio": "a", "tela": "b"}])
+    at = AppTest.from_file(PAGINA_M3).run(timeout=30)
+    at.button(key=f"abrir_{cid}").click().run(timeout=30)
+    assert not at.exception, at.exception
+    assert any(t.value == "Gancho X" for t in at.text_area)

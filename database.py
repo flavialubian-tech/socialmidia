@@ -855,6 +855,95 @@ def obter_conteudo(conteudo_id: int) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Módulo 3 — Cofre de Ideias (Kanban)
+# ---------------------------------------------------------------------------
+def listar_conteudos(persona_id: int | None = None, plataforma: str | None = None, funil: str | None = None,
+                     busca: str | None = None, status: str | None = None) -> list[dict]:
+    """Cards do Kanban com dados de apoio (persona, score, nº de métricas e de reciclagens)."""
+    sql = """SELECT c.*, p.nome AS persona, v.score_viralizacao,
+                    (SELECT COUNT(*) FROM metricas m WHERE m.conteudo_id = c.id) AS total_metricas,
+                    (SELECT COUNT(*) FROM conteudos f WHERE f.conteudo_pai_id = c.id) AS total_reciclagens
+             FROM conteudos c
+             LEFT JOIN personas p ON p.id = c.persona_id
+             LEFT JOIN validacoes v ON v.id = c.validacao_id
+             WHERE 1 = 1"""
+    params: list[Any] = []
+    for coluna, valor in (("c.persona_id", persona_id), ("c.plataforma", plataforma),
+                          ("c.funil", funil), ("c.status", status)):
+        if valor:
+            sql += f" AND {coluna} = ?"
+            params.append(valor)
+    if busca and busca.strip():
+        sql += " AND (c.titulo LIKE ? OR c.gancho LIKE ? OR c.legenda LIKE ?)"
+        params += [f"%{busca.strip()}%"] * 3
+    sql += " ORDER BY CASE WHEN c.status = 'postado' THEN c.data_postagem END DESC, c.atualizado_em DESC, c.id DESC"
+    with get_connection() as conn:
+        return [row_to_dict(r, _CONTEUDO_JSON) for r in conn.execute(sql, params)]
+
+
+def criar_ideia(titulo: str, persona_id: int | None = None, plataforma: str | None = None,
+                notas: str = "", assunto_id: int | None = None) -> int:
+    """Card simples na coluna 'Ideias no Radar' (ainda sem roteiro)."""
+    return criar_conteudo(titulo, persona_id=persona_id, assunto_id=assunto_id, plataforma=plataforma,
+                          extras={"notas": notas, "tema": titulo}, status="ideia")
+
+
+def atualizar_conteudo(conteudo_id: int, **campos: Any) -> None:
+    permitidos = {"titulo", "persona_id", "funil", "formato", "plataforma", "gancho", "roteiro", "legenda",
+                  "hashtags", "referencias", "extras", "status", "url_publicacao", "data_postagem",
+                  "validacao_id", "assunto_id"}
+    campos = {k: v for k, v in campos.items() if k in permitidos}
+    if not campos:
+        return
+    for chave in _CONTEUDO_JSON:
+        if chave in campos:
+            campos[chave] = json.dumps(campos[chave], ensure_ascii=False)
+    sets = ", ".join(f"{k} = ?" for k in campos)
+    with get_connection() as conn:
+        conn.execute(f"UPDATE conteudos SET {sets} WHERE id = ?", (*campos.values(), conteudo_id))
+
+
+def mover_conteudo(conteudo_id: int, status: str, data_postagem: str | None = None,
+                   url_publicacao: str | None = None) -> None:
+    """Muda a coluna do card (o trigger registra no Dossiê). Ao postar, grava a data da postagem."""
+    if status not in STATUS_KANBAN:
+        raise ValueError(f"Status inválido: {status}")
+    campos: dict[str, Any] = {"status": status}
+    if status == "postado":
+        campos["data_postagem"] = data_postagem or date.today().isoformat()
+        if url_publicacao is not None:
+            campos["url_publicacao"] = url_publicacao.strip() or None
+    atualizar_conteudo(conteudo_id, **campos)
+
+
+def excluir_conteudo(conteudo_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM conteudos WHERE id = ?", (conteudo_id,))
+
+
+def listar_historico(conteudo_id: int) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT evento, detalhes, criado_em FROM historico_conteudo WHERE conteudo_id = ? ORDER BY id",
+            (conteudo_id,),
+        )
+        return [dict(r) for r in rows]
+
+
+def listar_metricas(conteudo_id: int) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM metricas WHERE conteudo_id = ? ORDER BY marco_dias", (conteudo_id,))
+        return [dict(r) for r in rows]
+
+
+def listar_reciclagens(conteudo_id: int) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT id, titulo, formato, status, criado_em FROM conteudos "
+                            "WHERE conteudo_pai_id = ? ORDER BY id", (conteudo_id,))
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Alertas de métricas (base do Módulo 0)
 # ---------------------------------------------------------------------------
 def listar_alertas_metricas(hoje: date | None = None) -> list[dict]:

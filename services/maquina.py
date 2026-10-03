@@ -406,8 +406,11 @@ def gerar_roteiro(tema: str, funil: str, formato: str, plataforma: str, persona_
 
 def salvar_no_cofre(conteudo: dict, tema: str, funil: str, formato: str, plataforma: str,
                     persona_id: int | None = None, assunto_id: int | None = None,
-                    validacao: dict | None = None) -> int:
-    """Grava o conteúdo no Cofre de Ideias (coluna 'Roteiros Prontos')."""
+                    validacao: dict | None = None, conteudo_id: int | None = None) -> int:
+    """Grava o conteúdo no Cofre de Ideias (coluna 'Roteiros Prontos').
+
+    Com `conteudo_id` (ideia vinda do Cofre), atualiza o card existente em vez de criar outro.
+    """
     referencias = [c["url"] for c in (validacao or {}).get("concorrentes", [])[:5]]
     extras = {
         "tema": tema,
@@ -418,6 +421,19 @@ def salvar_no_cofre(conteudo: dict, tema: str, funil: str, formato: str, platafo
         "lacuna": (validacao or {}).get("lacuna", ""),
         "score_viralizacao": (validacao or {}).get("score_viralizacao"),
     }
+    if conteudo_id and (existente := db.obter_conteudo(conteudo_id)):
+        db.atualizar_conteudo(
+            conteudo_id, titulo=conteudo["titulo"] or tema, persona_id=persona_id,
+            assunto_id=assunto_id or existente["assunto_id"],
+            validacao_id=(validacao or {}).get("id") or existente["validacao_id"], funil=funil, formato=formato,
+            plataforma=plataforma, gancho=conteudo["gancho"], roteiro=conteudo["roteiro"],
+            legenda=conteudo["legenda"], hashtags=conteudo["hashtags"],
+            referencias=referencias or existente["referencias"], extras={**existente["extras"], **extras},
+        )
+        db.registrar_historico(conteudo_id, "roteirizado", f"Roteiro gerado na Máquina de Conteúdo ({formato})")
+        if existente["status"] == "ideia":
+            db.mover_conteudo(conteudo_id, "roteiro_pronto")
+        return conteudo_id
     return db.criar_conteudo(
         conteudo["titulo"] or tema, persona_id=persona_id, assunto_id=assunto_id,
         validacao_id=(validacao or {}).get("id"), funil=funil, formato=formato, plataforma=plataforma,
