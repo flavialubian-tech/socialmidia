@@ -37,35 +37,52 @@ def novo_video(nome_arquivo: str, conteudo: bytes, titulo: str = "", conteudo_id
 def etapa_cortar(job_id: int, limiar_db: float = -35.0, min_silencio: float = 0.45, margem: float = 0.12,
                  cortar: bool = True, gerar_legendas: bool = True, usar_gpu: bool = False,
                  transcrever_fn: Callable = video.transcrever,
-                 progresso: Callable[[str, float], None] = lambda _m, _p: None) -> dict:
-    """Etapa 1: remove os silêncios e transcreve o vídeo já cortado."""
+                 progresso: Callable[[str, float], None] = lambda _m, _p: None,
+                 remover_muletas: bool = True, muletas_extras: tuple[str, ...] | list[str] = ()) -> dict:
+    """Etapa 1: transcreve o vídeo original, corta pausas e vícios ("ééé", "hum") e reaproveita as palavras."""
     job = db.obter_job(job_id)
-    pasta = Path(job["arquivo_entrada"]).parent
+    entrada = job["arquivo_entrada"]
+    pasta = Path(entrada).parent
     cortado = pasta / "cortado.mp4"
     db.atualizar_job(job_id, status="processando", erro=None)
     try:
+        palavras, aviso = [], None
         if cortar:
-            progresso("✂️ Cortando os silêncios...", 0.0)
-            stats = video.cortar_silencios(job["arquivo_entrada"], cortado, limiar_db, min_silencio, margem, usar_gpu,
-                                           progresso_cb=lambda p: progresso("✂️ Cortando os silêncios...", p * 0.5))
+            transcricao = None
+            if gerar_legendas or remover_muletas:
+                progresso("📝 Transcrevendo com o Whisper para achar pausas e vícios "
+                          "(a primeira vez baixa o modelo)...", 0.0)
+                try:
+                    transcricao = transcrever_fn(entrada, com_hesitacoes=remover_muletas)
+                except video.VideoError as exc:  # sem Whisper: corta só pelo volume
+                    aviso = str(exc)
+            msg = "✂️ Cortando pausas e vícios..." if transcricao is not None else "✂️ Cortando os silêncios..."
+            progresso(msg, 0.45)
+            stats = video.cortar_silencios(entrada, cortado, limiar_db, min_silencio, margem, usar_gpu,
+                                           progresso_cb=lambda p: progresso(msg, 0.45 + p * 0.55),
+                                           palavras=transcricao, remover_muletas=remover_muletas,
+                                           muletas_extras=muletas_extras)
+            if gerar_legendas and stats["palavras"] is not None:
+                palavras = stats["palavras"]
         else:
-            shutil.copyfile(job["arquivo_entrada"], cortado)
+            shutil.copyfile(entrada, cortado)
             from moviepy import VideoFileClip
 
             with VideoFileClip(str(cortado)) as clip:
                 stats = {"duracao_original": round(clip.duration, 2), "duracao_final": round(clip.duration, 2),
-                         "trechos": [(0.0, clip.duration)], "inicios": [0.0]}
-        palavras, aviso = [], None
-        if gerar_legendas:
-            progresso("📝 Transcrevendo com o Whisper (a primeira vez baixa o modelo)...", 0.55)
-            try:
-                palavras = transcrever_fn(cortado)
-            except video.VideoError as exc:  # sem Whisper: o corte continua valendo, só não há legendas
-                aviso = str(exc)
+                         "trechos": [(0.0, clip.duration)], "inicios": [0.0], "muletas": []}
+            if gerar_legendas:
+                progresso("📝 Transcrevendo com o Whisper (a primeira vez baixa o modelo)...", 0.3)
+                try:
+                    palavras = transcrever_fn(cortado)
+                except video.VideoError as exc:  # sem Whisper: o vídeo continua valendo, só não há legendas
+                    aviso = str(exc)
         dados = {**job["dados"], "etapa": "cortado", "palavras": palavras, "aviso_transcricao": aviso,
                  "inicios": stats["inicios"], "duracao_original": float(stats["duracao_original"]),
                  "duracao_final": float(stats["duracao_final"]), "trechos": len(stats["trechos"]),
-                 "opcoes_corte": {"limiar_db": limiar_db, "min_silencio": min_silencio, "margem": margem}}
+                 "muletas": stats.get("muletas", []),
+                 "opcoes_corte": {"limiar_db": limiar_db, "min_silencio": min_silencio, "margem": margem,
+                                  "remover_muletas": remover_muletas, "muletas_extras": list(muletas_extras)}}
         db.atualizar_job(job_id, status="pendente", dados=dados)
         progresso("Pronto!", 1.0)
         return dados

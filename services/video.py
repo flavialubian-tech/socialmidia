@@ -1,7 +1,8 @@
 """Vídeo Automático (Módulo 4).
 
-Etapa 1 — cortar_silencios(): detecta as falas pelo volume do áudio e remove os silêncios.
-           transcrever(): Whisper com tempo de cada palavra (usa a GPU NVIDIA quando houver).
+Etapa 1 — transcrever(): Whisper com tempo de cada palavra (usa a GPU NVIDIA quando houver).
+           cortar_silencios(): remove as pausas (volume do áudio + intervalos entre as palavras) e os
+           vícios de linguagem ("ééé", "hum", "ahn"...) e devolve as palavras já na nova linha do tempo.
 Etapa 2 — renderizar(): legendas sincronizadas (palavra ativa em destaque), zooms dinâmicos e motions:
            • zoom alternado nos cortes (disfarça o "jump cut" dos silêncios removidos)
            • punch-in nas palavras de ênfase
@@ -57,7 +58,8 @@ def detectar_falas(amostras: np.ndarray, sr: int, limiar_db: float = -35.0, min_
     referencia = np.percentile(rms, 99)
     if referencia <= 1e-8:
         return []  # vídeo mudo
-    com_fala = 20 * np.log10(rms / referencia) > limiar_db
+    decibeis = 20 * np.log10(rms / referencia)
+    com_fala = decibeis > limiar_adaptativo(decibeis, limiar_db)
 
     trechos: list[list[float]] = []
     inicio = None
@@ -84,6 +86,109 @@ def detectar_falas(amostras: np.ndarray, sr: int, limiar_db: float = -35.0, min_
         else:
             final.append([a, b])
     return [(round(a, 3), round(b, 3)) for a, b in final]
+
+
+def limiar_adaptativo(decibeis: np.ndarray, limiar_db: float) -> float:
+    """Sobe o limiar quando há ruído de fundo (ventilador, ar-condicionado, chiado do microfone).
+
+    Com ruído, as pausas não ficam em "silêncio absoluto": o piso do áudio fica, por exemplo, em -28 dB,
+    acima do limiar fixo de -35 dB, e nada seria cortado. Aqui o limiar passa a ser 30% do caminho
+    entre o piso de ruído (percentil 10) e o volume típico da fala (percentil 90).
+    """
+    piso, fala = float(np.percentile(decibeis, 10)), float(np.percentile(decibeis, 90))
+    if fala - piso < 12:  # quase sem pausas (ou ruído tão alto quanto a voz): mantém o limiar escolhido
+        return limiar_db
+    return max(limiar_db, piso + 0.3 * (fala - piso))
+
+
+# ---------------------------------------------------------------------------
+# Vícios de linguagem ("ééé", "hum", "ahn") e pausas pela transcrição
+# ---------------------------------------------------------------------------
+# Sons que nunca são palavra de verdade. "um" (número/artigo) e "é" (verbo) ficam de fora de propósito.
+_VOCALIZACAO = re.compile(r"a+h+n*|a+n+|ã+h*|h+ã+|h*u+m{2,}|h+u+m+|h+m+|m{2,}|u+h+|e+h+|é{2,}h*|e{3,}|ê{2,}|a{3,}|ã{2,}")
+# Palavras curtas que só são vício quando "esticadas" (o Whisper escreve "é" tanto para o verbo quanto para "éééé")
+_AMBIGUAS = {"é", "e", "ê", "a", "ã", "o", "ó"}
+DURACAO_MULETA_AMBIGUA = 0.45
+# Faz o Whisper escrever as hesitações em vez de "limpar" o texto (ele costuma omiti-las)
+PROMPT_HESITACOES = "Ééé... então, hum, ahn, eu acho que, éé, tipo assim... hã, hmm, né?"
+
+
+def _normalizar_palavra(texto: str) -> str:
+    return re.sub(r"[^\wà-ÿ]", "", texto.lower())
+
+
+def eh_muleta(palavra: dict, extras: tuple[str, ...] | list[str] = ()) -> bool:
+    texto = _normalizar_palavra(palavra["texto"])
+    if not texto:
+        return False
+    if texto in {_normalizar_palavra(e) for e in extras if e.strip()}:
+        return True
+    if _VOCALIZACAO.fullmatch(texto):
+        return True
+    return texto in _AMBIGUAS and palavra["fim"] - palavra["inicio"] >= DURACAO_MULETA_AMBIGUA
+
+
+def trechos_por_palavras(palavras: list[dict], duracao: float, min_silencio: float = 0.45, margem: float = 0.12,
+                         remover_muletas: bool = True,
+                         extras: tuple[str, ...] | list[str] = ()) -> tuple[list[tuple[float, float]], list[dict]]:
+    """Trechos a manter segundo a transcrição: só as palavras de verdade.
+
+    Pausas maiores que `min_silencio` entre palavras saem (mesmo com ruído de fundo), e cada vício de
+    linguagem sai inteiro, mesmo colado nas palavras vizinhas. Devolve (trechos, vícios removidos).
+    """
+    ordenadas = sorted(palavras, key=lambda p: p["inicio"])
+    removidas: list[dict] = []
+    trechos: list[list[float]] = []
+    limite_esq = 0.0  # a margem nunca invade um vício já removido
+    fim_palavra = 0.0
+    separar = True
+    for p in ordenadas:
+        if remover_muletas and eh_muleta(p, extras):
+            removidas.append(p)
+            if trechos:
+                trechos[-1][1] = min(trechos[-1][1], max(fim_palavra, p["inicio"]))
+            limite_esq = p["fim"]
+            separar = True
+            continue
+        inicio, fim = max(limite_esq, p["inicio"] - margem, 0.0), min(duracao, p["fim"] + margem)
+        if trechos and not separar and p["inicio"] - trechos[-1][1] + margem < min_silencio:
+            trechos[-1][1] = max(trechos[-1][1], fim)
+        elif trechos and inicio <= trechos[-1][1]:
+            trechos[-1][1] = max(trechos[-1][1], fim)
+        else:
+            trechos.append([inicio, fim])
+        fim_palavra = p["fim"]
+        separar = False
+    return [(round(a, 3), round(b, 3)) for a, b in trechos if b - a > 0.05], removidas
+
+
+def intersectar(a: list[tuple[float, float]], b: list[tuple[float, float]], minimo: float = 0.08) -> list[tuple[float, float]]:
+    """Partes presentes nas duas listas de trechos (ambas ordenadas)."""
+    resultado, i, j = [], 0, 0
+    while i < len(a) and j < len(b):
+        inicio, fim = max(a[i][0], b[j][0]), min(a[i][1], b[j][1])
+        if fim - inicio >= minimo:
+            resultado.append((round(inicio, 3), round(fim, 3)))
+        if a[i][1] < b[j][1]:
+            i += 1
+        else:
+            j += 1
+    return resultado
+
+
+def remapear_palavras(palavras: list[dict], trechos: list[tuple[float, float]]) -> list[dict]:
+    """Leva as palavras para a linha do tempo do vídeo cortado (dispensa transcrever duas vezes)."""
+    inicios = inicios_dos_trechos(trechos)
+    novas = []
+    for p in sorted(palavras, key=lambda p: p["inicio"]):
+        meio = (p["inicio"] + p["fim"]) / 2
+        k = bisect.bisect_right([a for a, _ in trechos], meio) - 1
+        if k < 0 or meio > trechos[k][1]:
+            continue  # a palavra caiu num trecho cortado
+        a, b = trechos[k]
+        novas.append({**p, "inicio": round(inicios[k] + max(p["inicio"], a) - a, 3),
+                      "fim": round(inicios[k] + min(p["fim"], b) - a, 3)})
+    return novas
 
 
 def inicios_dos_trechos(trechos: list[tuple[float, float]]) -> list[float]:
@@ -150,20 +255,32 @@ def audio_mono(caminho: str | Path, sr: int = SR_ANALISE) -> np.ndarray:
 
 def cortar_silencios(entrada: str | Path, saida: str | Path, limiar_db: float = -35.0, min_silencio: float = 0.45,
                      margem: float = 0.12, usar_gpu: bool = False,
-                     progresso_cb: Callable[[float], None] | None = None) -> dict:
+                     progresso_cb: Callable[[float], None] | None = None, palavras: list[dict] | None = None,
+                     remover_muletas: bool = True, muletas_extras: tuple[str, ...] | list[str] = ()) -> dict:
+    """Corta pausas e vícios. Com `palavras` (transcrição do vídeo original), o corte usa também a fala
+    transcrita: o que não é palavra de verdade sai, e as palavras voltam já na nova linha do tempo."""
     from moviepy import VideoFileClip, concatenate_videoclips
 
     clip = VideoFileClip(str(entrada))
     try:
         trechos = detectar_falas(audio_mono(entrada), SR_ANALISE, limiar_db, min_silencio, margem)
+        removidas: list[dict] = []
+        if palavras:
+            por_palavras, removidas = trechos_por_palavras(palavras, clip.duration, min_silencio, margem,
+                                                           remover_muletas, muletas_extras)
+            # o volume apara o fim "esticado" das palavras; se discordarem totalmente, vale a transcrição
+            trechos = intersectar(por_palavras, trechos) or por_palavras
         # o áudio pode durar alguns milissegundos a mais que o vídeo
         trechos = [(a, min(b, clip.duration)) for a, b in trechos if a < clip.duration - 0.05]
         if not trechos:
             raise VideoError("Não encontrei fala no vídeo. Tente baixar a sensibilidade (limiar de silêncio).")
         cortado = concatenate_videoclips([clip.subclipped(a, b) for a, b in trechos])
         exportar(cortado, saida, fps=clip.fps, usar_gpu=usar_gpu, preset="veryfast", progresso_cb=progresso_cb)
+        mantidas = [p for p in palavras or [] if p not in removidas]
         return {"duracao_original": round(clip.duration, 2), "duracao_final": round(cortado.duration, 2),
-                "trechos": trechos, "inicios": inicios_dos_trechos(trechos)}
+                "trechos": trechos, "inicios": inicios_dos_trechos(trechos),
+                "palavras": remapear_palavras(mantidas, trechos) if palavras is not None else None,
+                "muletas": [{"texto": p["texto"], "inicio": p["inicio"]} for p in removidas]}
     finally:
         clip.close()
 
@@ -232,8 +349,12 @@ def _carregar_whisper(nome: str, dispositivo: str):
     return whisper.load_model(nome, device=dispositivo)
 
 
-def transcrever(caminho: str | Path, modelo: str | None = None, idioma: str = "pt") -> list[dict]:
-    """Palavras com início/fim em segundos (o áudio vai direto para o Whisper, sem exigir FFmpeg no PATH)."""
+def transcrever(caminho: str | Path, modelo: str | None = None, idioma: str = "pt",
+                com_hesitacoes: bool = False) -> list[dict]:
+    """Palavras com início/fim em segundos (o áudio vai direto para o Whisper, sem exigir FFmpeg no PATH).
+
+    Com `com_hesitacoes`, o Whisper é estimulado a escrever "ééé", "hum" etc., para poderem ser cortados.
+    """
     try:
         import whisper  # noqa: F401
     except ImportError as exc:
@@ -241,16 +362,19 @@ def transcrever(caminho: str | Path, modelo: str | None = None, idioma: str = "p
                          "e o PyTorch com suporte à sua placa NVIDIA.") from exc
     audio = audio_mono(caminho)
     gpu = tem_gpu()
+    extras = {"initial_prompt": PROMPT_HESITACOES} if com_hesitacoes else {}
     try:
         modelo_whisper = _carregar_whisper(modelo or modelo_padrao(), "cuda" if gpu else "cpu")
-        resultado = modelo_whisper.transcribe(audio, language=idioma, word_timestamps=True, fp16=gpu, verbose=None)
+        resultado = modelo_whisper.transcribe(audio, language=idioma, word_timestamps=True, fp16=gpu, verbose=None,
+                                               **extras)
     except RuntimeError as exc:
         if not gpu:
             raise VideoError(f"Falha ao transcrever com o Whisper: {str(exc).splitlines()[0]}") from exc
         # a placa falhou no meio do caminho (driver, memória, versão do PyTorch): tenta de novo na CPU
         _carregar_whisper.cache_clear()
         modelo_whisper = _carregar_whisper(modelo or "small", "cpu")
-        resultado = modelo_whisper.transcribe(audio, language=idioma, word_timestamps=True, fp16=False, verbose=None)
+        resultado = modelo_whisper.transcribe(audio, language=idioma, word_timestamps=True, fp16=False, verbose=None,
+                                               **extras)
     palavras = []
     for segmento in resultado.get("segments", []):
         for p in segmento.get("words", []):
