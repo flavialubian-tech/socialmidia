@@ -97,3 +97,40 @@ with st.form("form_metas"):
         db.set_config("metricas_limiar_views", int(meta_views))
         db.set_config("metricas_limiar_saves", int(meta_saves))
         st.success("Metas salvas!")
+
+# ---------------------------------------------------------------------------
+# Estúdio
+# ---------------------------------------------------------------------------
+st.subheader("🎬 Estúdio de Produção")
+from services import estudio, video  # noqa: E402
+
+gpu = video.tem_gpu()
+st.caption("🟢 GPU NVIDIA detectada pelo PyTorch." if gpu else
+           "⚪ GPU NVIDIA não detectada. Se você tem uma, instale o PyTorch com CUDA (veja o README).")
+MODELOS = {"auto": f"Automático ({'medium' if gpu else 'small'})", "small": "small — rápido",
+           "medium": "medium — ótimo em português (recomendado com GPU)", "large-v3": "large-v3 — máximo, mais lento",
+           "turbo": "turbo — quase o large, bem mais rápido (GPU)", "base": "base — muito rápido, menos preciso"}
+with st.form("form_estudio"):
+    atual = db.get_config("estudio_whisper_modelo", "auto")
+    modelo = st.selectbox("Modelo do Whisper (legendas)", list(MODELOS), format_func=MODELOS.get,
+                          index=list(MODELOS).index(atual) if atual in MODELOS else 0)
+    cor = st.color_picker("Cor de destaque padrão (legendas e carrosséis)", db.get_config("estudio_cor_destaque", "#FFD60A"))
+    if st.form_submit_button("💾 Salvar"):
+        db.set_config("estudio_whisper_modelo", modelo)
+        db.set_config("estudio_cor_destaque", cor)
+        st.success("Preferências do Estúdio salvas!")
+
+fonte_atual = db.get_config("estudio_fonte", "")
+st.caption(f"Fonte das legendas e carrosséis: **{fonte_atual.split('/')[-1].split(chr(92))[-1] if fonte_atual else 'Source Sans Pro Black (incluída no app)'}**")
+c1, c2 = st.columns([3, 1])
+arquivo_fonte = c1.file_uploader("Usar minha fonte (.ttf ou .otf)", type=["ttf", "otf"], key="cfg_fonte")
+if arquivo_fonte is not None and c2.button("Usar esta fonte"):
+    try:
+        db.set_config("estudio_fonte", estudio.salvar_fonte(arquivo_fonte.name, arquivo_fonte.getvalue()))
+        st.toast("Fonte atualizada!", icon="🔤")
+        st.rerun()
+    except OSError:
+        st.error("Esse arquivo não parece ser uma fonte válida.")
+if fonte_atual and c2.button("Voltar à fonte padrão"):
+    db.set_config("estudio_fonte", "")
+    st.rerun()

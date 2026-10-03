@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("SOCIALMIDIA_DB_PATH", BASE_DIR / "data" / "socialmidia.db"))
 
 # Incrementar sempre que uma migração for adicionada em MIGRATIONS.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Valores controlados (espelhados nos CHECKs do schema)
 PLATAFORMAS = ("instagram", "tiktok", "youtube", "multiplataforma")
@@ -302,6 +302,19 @@ ALTER TABLE conteudos  ADD COLUMN plataforma TEXT;
 ALTER TABLE conteudos  ADD COLUMN extras TEXT NOT NULL DEFAULT '{}'; -- ganchos alternativos, CTA, duração...
 """
 
+SCHEMA_V3 = """
+-- =========================================================
+-- MÓDULO 4 — ESTÚDIO (campos extras)
+-- =========================================================
+ALTER TABLE templates_carrossel ADD COLUMN cor_destaque TEXT NOT NULL DEFAULT '#FFD60A';
+ALTER TABLE templates_carrossel ADD COLUMN posicao TEXT NOT NULL DEFAULT 'centro';   -- topo | centro | base
+ALTER TABLE templates_carrossel ADD COLUMN alinhamento TEXT NOT NULL DEFAULT 'centro'; -- esquerda | centro
+ALTER TABLE templates_carrossel ADD COLUMN escurecer INTEGER NOT NULL DEFAULT 35;     -- % de sombra sobre a imagem
+ALTER TABLE jobs_midia ADD COLUMN titulo TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs_midia ADD COLUMN dados TEXT NOT NULL DEFAULT '{}';                   -- JSON: transcrição, opções, estatísticas
+ALTER TABLE jobs_midia ADD COLUMN atualizado_em TEXT;
+"""
+
 CONFIGURACOES_PADRAO = {
     "llm_provedor": "ollama",          # ollama | openai | anthropic
     "llm_modelo_ollama": "llama3.1",
@@ -316,12 +329,16 @@ CONFIGURACOES_PADRAO = {
     "termometro_comentarios_concorrentes": "40",
     "metricas_limiar_views": "10000",  # acima disso o Dashboard sugere "Reciclar este tema"
     "metricas_limiar_saves": "500",
+    "estudio_whisper_modelo": "auto",   # auto = medium com GPU NVIDIA, small sem GPU
+    "estudio_cor_destaque": "#FFD60A",
+    "estudio_fonte": "",                # vazio = fonte incluída no app (Source Sans Pro Black)
 }
 
 # Migrações futuras: {versao: "SQL"}. Executadas em ordem quando user_version < versao.
 MIGRATIONS: dict[int, str] = {
     1: SCHEMA_V1,
     2: SCHEMA_V2,
+    3: SCHEMA_V3,
 }
 
 
@@ -965,6 +982,112 @@ def listar_alertas_metricas(hoje: date | None = None) -> list[dict]:
     """
     with get_connection() as conn:
         return [dict(r) for r in conn.execute(sql, (hoje_str, hoje_str))]
+
+
+# ---------------------------------------------------------------------------
+# Módulo 4 — Estúdio (templates de carrossel e trabalhos de mídia)
+# ---------------------------------------------------------------------------
+def pasta_dados() -> Path:
+    """Pasta onde ficam banco, uploads, templates e arquivos gerados."""
+    pasta = Path(DB_PATH).parent
+    pasta.mkdir(parents=True, exist_ok=True)
+    return pasta
+
+
+def criar_template(nome: str, caminho_imagem: str, persona_id: int | None = None, fonte: str | None = None,
+                   tamanho_fonte: int = 72, cor_texto: str = "#FFFFFF", cor_destaque: str = "#FFD60A",
+                   posicao: str = "centro", alinhamento: str = "centro", margem: int = 90,
+                   escurecer: int = 35) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO templates_carrossel (nome, caminho_imagem, persona_id, fonte, tamanho_fonte, cor_texto,
+                                                cor_destaque, posicao, alinhamento, margem, escurecer)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (nome.strip(), caminho_imagem, persona_id, fonte, tamanho_fonte, cor_texto, cor_destaque, posicao,
+             alinhamento, margem, escurecer),
+        )
+        return cur.lastrowid
+
+
+def listar_templates(persona_id: int | None = None) -> list[dict]:
+    sql = """SELECT t.*, p.nome AS persona FROM templates_carrossel t
+             LEFT JOIN personas p ON p.id = t.persona_id"""
+    params: list[Any] = []
+    if persona_id:
+        sql += " WHERE t.persona_id = ? OR t.persona_id IS NULL"
+        params.append(persona_id)
+    sql += " ORDER BY t.nome COLLATE NOCASE"
+    with get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def obter_template(template_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM templates_carrossel WHERE id = ?", (template_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def atualizar_template(template_id: int, **campos: Any) -> None:
+    permitidos = {"nome", "persona_id", "fonte", "tamanho_fonte", "cor_texto", "cor_destaque", "posicao",
+                  "alinhamento", "margem", "escurecer", "caminho_imagem"}
+    campos = {k: v for k, v in campos.items() if k in permitidos}
+    if not campos:
+        return
+    sets = ", ".join(f"{k} = ?" for k in campos)
+    with get_connection() as conn:
+        conn.execute(f"UPDATE templates_carrossel SET {sets} WHERE id = ?", (*campos.values(), template_id))
+
+
+def excluir_template(template_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM templates_carrossel WHERE id = ?", (template_id,))
+
+
+def criar_job(tipo: str, titulo: str = "", conteudo_id: int | None = None, arquivo_entrada: str | None = None,
+              dados: dict | None = None) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO jobs_midia (tipo, titulo, conteudo_id, arquivo_entrada, dados, atualizado_em)
+               VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))""",
+            (tipo, titulo, conteudo_id, arquivo_entrada, to_json(dados or {})),
+        )
+        return cur.lastrowid
+
+
+def atualizar_job(job_id: int, **campos: Any) -> None:
+    permitidos = {"status", "arquivo_entrada", "arquivo_saida", "erro", "dados", "titulo", "conteudo_id"}
+    campos = {k: v for k, v in campos.items() if k in permitidos}
+    if "dados" in campos:
+        campos["dados"] = to_json(campos["dados"])
+    if not campos:
+        return
+    sets = "".join(f"{k} = ?, " for k in campos)
+    with get_connection() as conn:
+        conn.execute(f"UPDATE jobs_midia SET {sets}atualizado_em = datetime('now','localtime') WHERE id = ?",
+                     (*campos.values(), job_id))
+
+
+def obter_job(job_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM jobs_midia WHERE id = ?", (job_id,)).fetchone()
+    return row_to_dict(row, ("dados",))
+
+
+def listar_jobs(tipo: str | None = None, limite: int = 50) -> list[dict]:
+    sql = """SELECT j.*, c.titulo AS conteudo FROM jobs_midia j LEFT JOIN conteudos c ON c.id = j.conteudo_id"""
+    params: list[Any] = []
+    if tipo:
+        sql += " WHERE j.tipo = ?"
+        params.append(tipo)
+    sql += " ORDER BY j.id DESC LIMIT ?"
+    params.append(limite)
+    with get_connection() as conn:
+        return [row_to_dict(r, ("dados",)) for r in conn.execute(sql, params)]
+
+
+def excluir_job(job_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM jobs_midia WHERE id = ?", (job_id,))
 
 
 def salvar_metricas(conteudo_id: int, marco_dias: int, views: int = 0, saves: int = 0, shares: int = 0,

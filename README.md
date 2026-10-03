@@ -34,6 +34,10 @@ services/               # lógica sem Streamlit
   cofre.py              # edição com registro no Dossiê e reciclagem de posts
   dashboard.py          # indicadores, alta performance e "Reciclar este tema"
   graficos.py           # gráficos do Dashboard (Plotly)
+  video.py              # corte de silêncio, Whisper, legendas, zooms e motions
+  carrossel.py          # lâminas PNG sobre os templates + .zip
+  estudio.py            # trabalhos do Estúdio (pastas, etapas, histórico)
+assets/fontes/          # Source Sans Pro (licença SIL OFL) usada em legendas e carrosséis
 worker.py               # roda o piloto automático com o app fechado
 tests/                  # testes automatizados (IA simulada, sem custo)
 data/                   # banco, uploads, templates e exportações (fora do git)
@@ -96,6 +100,42 @@ quentes de cada palavra, lê os comentários e envia **dores e tendências** par
   tempo de tudo o que aconteceu com o card e métricas.
 - **♻️ Reciclar** (cards postados): a IA reescreve o conteúdo em outro formato, usando o original e
   as métricas dele; a nova versão vira um card em "Roteiros Prontos", ligada ao post de origem.
+
+## Módulo 4 — Estúdio de Produção
+
+### 🎬 Vídeo Automático
+1. **Etapa 1**: envie o vídeo bruto (pode vincular a um conteúdo do Cofre). O app **corta os
+   silêncios** (sensibilidade ajustável) e **transcreve** com o Whisper, palavra por palavra.
+2. Revise: veja o vídeo cortado e **corrija palavras** da transcrição, se precisar.
+3. **Etapa 2**: escolha o estilo e renderize:
+   - **Legendas sincronizadas** (2–4 palavras por vez, palavra falada em destaque por cor ou pílula,
+     entrada em "pop" e saída rápida, dentro da área segura do Reels/TikTok);
+   - **Zooms dinâmicos**: zoom alternado a cada corte (disfarça os cortes) e punch-in nas palavras
+     de ênfase (números, exclamações, palavras longas ou em CAIXA ALTA);
+   - **Motions**: movimento suave de câmera (Ken Burns), título do gancho animado nos primeiros
+     segundos e barra de progresso;
+   - Formato original ou **vertical 9:16**; exportação pela GPU (NVENC) com volta automática à CPU.
+   A **prévia de um quadro** mostra o resultado antes de renderizar o vídeo todo.
+
+#### Usando a placa NVIDIA (recomendado)
+O `pip install -r requirements.txt` instala o PyTorch **sem** CUDA no Windows. Para o Whisper
+usar a GPU, reinstale o PyTorch com CUDA usando o comando que o site https://pytorch.org gera
+para o seu sistema, por exemplo:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+Com a GPU detectada, o Estúdio usa o modelo **medium** (ótimo em português). Sem GPU, usa o
+**small**. Dá para trocar em ⚙️ Configurações. Na primeira transcrição o Whisper baixa o modelo
+(~1,5 GB para o medium). Não é preciso instalar o FFmpeg: o app usa o que vem com o moviepy.
+
+### 🖼️ Fábrica de Carrosséis
+- Cadastre **templates** (imagem de fundo, cores, posição do texto, escurecimento).
+- Escolha um conteúdo do Cofre (as lâminas do roteiro entram automaticamente) ou cole um texto
+  (linha em branco separa as lâminas; `*asteriscos*` destacam palavras na cor de destaque).
+- O texto se ajusta sozinho ao espaço; capa maior, contador (2/8), assinatura e "arraste →".
+- Gere e baixe o **.zip** com as lâminas em PNG (4:5, 1:1 ou 9:16).
 
 > Os nomes e formatos dos coletores da Apify ficam em `services/scraper.py`
 > (`ATORES_APIFY`, `ATORES_BUSCA_APIFY`, `_input_apify`, `_input_busca`).

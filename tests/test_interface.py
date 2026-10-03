@@ -217,3 +217,23 @@ def test_maquina_abre_com_assunto_de_reciclagem():
     assert not at.exception, at.exception
     assert at.radio(key="m2_fonte").value == "🔥 Assunto Quente"
     assert at.selectbox(key="m2_assunto").value == db.assunto_de_reciclagem(cid)["id"]
+
+
+# --- Módulo 4: Estúdio -------------------------------------------------------
+PAGINA_M4 = str(RAIZ / "modulos" / "m4_estudio.py")
+
+
+def test_estudio_carrega_e_previa_carrossel():
+    at = AppTest.from_file(PAGINA_M4).run(timeout=30)
+    assert not at.exception, at.exception
+    at.radio(key="m4_car_origem").set_value("✍️ Texto livre").run(timeout=30)
+    at.text_area(key="m4_car_texto_livre").input("Capa *forte*\n\nSegunda lâmina\n\nCTA final").run(timeout=30)
+    assert any("3 lâmina(s)" in c.value for c in at.caption)
+    next(b for b in at.button if "Pré-visualizar" in b.label).click().run(timeout=30)
+    assert not at.exception, at.exception
+
+
+def test_configuracoes_tem_estudio():
+    at = AppTest.from_file(str(RAIZ / "modulos" / "configuracoes.py")).run(timeout=30)
+    assert not at.exception, at.exception
+    assert any("Estúdio" in s.value for s in at.subheader)

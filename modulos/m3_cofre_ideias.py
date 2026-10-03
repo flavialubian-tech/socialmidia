@@ -13,7 +13,7 @@ ICONES_COLUNA = {"ideia": "💡", "roteiro_pronto": "📝", "em_edicao": "🎬",
 ROTULOS_PLATAFORMA = {"tiktok": "🎵 TikTok", "instagram": "📸 Instagram", "youtube": "▶️ YouTube",
                       "multiplataforma": "🌐 Multi"}
 ROTULOS_FUNIL = {"topo": "🧲 Topo", "meio": "📚 Meio", "fundo": "💰 Fundo"}
-ROTULOS_EVENTO = {"criado": "🆕 Criado", "metricas": "📊 Métricas", "status_alterado": "➡️ Mudou de coluna", "editado": "✏️ Editado",
+ROTULOS_EVENTO = {"criado": "🆕 Criado", "metricas": "📊 Métricas", "estudio": "🎬 Estúdio", "status_alterado": "➡️ Mudou de coluna", "editado": "✏️ Editado",
                   "roteirizado": "⚙️ Roteirizado", "reciclado": "♻️ Reciclagem"}
 STATUS = list(db.STATUS_KANBAN)
 
